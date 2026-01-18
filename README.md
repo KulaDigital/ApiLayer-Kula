@@ -15,7 +15,65 @@ A production-ready Node.js + Express backend for the Greeto chat widget. Integra
 - [Project Structure](#project-structure)
 - [Database Schema](#database-schema)
 - [Development](#development)
+- [Git Workflow & Contributing](#git-workflow--contributing)
 - [Troubleshooting](#troubleshooting)
+
+## 🌿 Git Workflow & Contributing
+
+### Branch Strategy
+
+This repository follows a structured Git workflow to maintain code quality and stability:
+
+- **`main` branch**: Production-ready code only
+  - Represents the currently deployed production version
+  - Protected branch - only merge via PRs after deployment verification
+  - All code on `main` should be stable and tested
+
+- **`dev` branch**: Development integration branch
+  - Contains the latest development features and fixes
+  - Staging ground for features before production deployment
+  - All feature PRs must target this branch
+
+### Contributing Guidelines
+
+1. **Create a Feature Branch**
+   - Always create a new branch from the `dev` branch
+   - Use naming convention: `feature/<feature-name>` or `fix/<bug-name>`
+   - Example: `feature/user-authentication`, `fix/chat-response-delay`
+   ```bash
+   git checkout dev
+   git pull origin dev
+   git checkout -b feature/your-feature-name
+   ```
+
+2. **Commit Your Changes**
+   - Make meaningful, atomic commits
+   - Write clear commit messages describing the changes
+
+3. **Create a Pull Request**
+   - Push your feature branch to the repository
+   - Create a PR targeting the `dev` branch (not `main`)
+   - Include a detailed description of your changes
+   - Request code review from team members
+   - PR must be approved before merging
+
+4. **Merge to Dev**
+   - After PR approval, merge into the `dev` branch
+   - Delete the feature branch after merging
+
+5. **Deployment to Production**
+   - When ready for production release, create a PR from `dev` to `main`
+   - Perform final testing on the `dev` branch
+   - After verification, merge the tested code into `main`
+   - Only production-ready code should ever reach `main`
+
+### Workflow Diagram
+```
+feature/xyz → PR → dev → PR → main (Production)
+             ↑    ↑    ↑         ↑
+           Dev  Dev  Deploy    Live
+          Work  Test Release
+```
 
 ## ✨ Features
 
