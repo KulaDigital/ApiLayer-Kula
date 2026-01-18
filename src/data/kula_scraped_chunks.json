@@ -1,0 +1,27 @@
+[
+  {
+    "id": 1,
+    "question": "What services does Greeto Digital Solution offer?",
+    "answer": "Greeto Digital Solution offers web development, digital marketing, SEO, branding, and e-commerce solutions tailored for businesses."
+  },
+  {
+    "id": 2,
+    "question": "How can I contact Greeto Digital Solution?",
+    "answer": "You can contact Greeto Digital Solution via their website contact form or by calling +91-9876543210."
+  },
+  {
+    "id": 3,
+    "question": "Does Greeto Digital Solution provide SEO services?",
+    "answer": "Yes, Greeto Digital Solution specializes in SEO services to help businesses improve their online visibility and search rankings."
+  },
+  {
+    "id": 4,
+    "question": "Can Greeto Digital Solution help with e-commerce websites?",
+    "answer": "Absolutely! Greeto Digital Solution builds custom e-commerce websites and provides end-to-end solutions for online stores."
+  },
+  {
+    "id": 5,
+    "question": "Where is Greeto Digital Solution located?",
+    "answer": "Greeto Digital Solution is based in Bangalore, India, serving clients globally."
+  }
+]
