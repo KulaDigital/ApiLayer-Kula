@@ -9,11 +9,14 @@ import chatRoutes from './routes/chatRoutes.js';
 import scraperRoutes from './routes/scraperRoutes.js';
 import embeddingRoutes from './routes/embeddingRoutes.js';
 import searchRoutes from './routes/searchRoutes.js';
-import widgetRoutes from './routes/widgetRoutes.js';      // ✅ NEW
-import adminRoutes from './routes/adminRoutes.js';        // ✅ NEW
+import widgetRoutes from './routes/widgetRoutes.js';      // ✅ API-key based
+import adminRoutes from './routes/adminRoutes.js';        // ✅ Dashboard protected routes
+import authRoutes from './routes/authRoutes.js';          // ✅ NEW: /api/me
+import clientRoutes from './routes/clientRoutes.js';      // ✅ NEW: /api/client/* protected
 
 // Import middleware
 import { apiKeyMiddleware } from './middleware/apiKey.js';
+import { requireDashboardAuth, requireDashboardRole } from './middleware/dashboardAuth.js';
 import './config/database.js';
 
 const app = express();
@@ -27,13 +30,33 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Server is running' });
 });
 
-// Widget config endpoint (NO apiKeyMiddleware - validates internally)
+// ============================================
+// Dashboard Authentication Routes
+// ============================================
+
+// GET /api/me - Check dashboard access (requires valid token, no role restriction)
+app.use('/api', authRoutes);
+
+// Protected Admin Routes: /api/admin/*
+// Requires: valid Bearer token + super_admin role
+// RLS enforced on all queries via req.supabaseClient
+app.use('/api/admin', requireDashboardAuth, requireDashboardRole(['super_admin']), adminRoutes);
+
+// Protected Client Routes: /api/client/*
+// Requires: valid Bearer token + client role
+// RLS enforced on all queries via req.supabaseClient
+app.use('/api/client', requireDashboardAuth, requireDashboardRole(['client']), clientRoutes);
+
+// ============================================
+// Widget & API-Key Based Routes (unchanged)
+// ============================================
+
+// Widget config endpoint (NO dashboard auth - validates via API key)
 app.use('/api/widget', widgetRoutes);
 
-// Admin endpoints (NO auth for now - add later)
-app.use('/api/admin', adminRoutes);
-
-// Existing API routes (with apiKeyMiddleware)
+// ============================================
+// Legacy API Routes (with apiKeyMiddleware)
+// ============================================
 app.use('/api/chat', apiKeyMiddleware, chatRoutes);
 app.use('/api/scraper', apiKeyMiddleware, scraperRoutes);
 app.use('/api/embeddings', apiKeyMiddleware, embeddingRoutes);

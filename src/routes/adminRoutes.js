@@ -5,6 +5,41 @@ import { generateEmbedScript, generateInstallInstructions } from '../utils/embed
 
 const router = express.Router();
 
+/**
+ * GET /api/admin/me
+ * Protected: Requires super_admin dashboard role
+ * 
+ * Returns the super_admin's dashboard info
+ * Response (snake_case):
+ * {
+ *   "role": "super_admin",
+ *   "client_id": null
+ * }
+ */
+router.get('/me', (req, res) => {
+  try {
+    // Middleware requireDashboardRole(['super_admin']) validates this before reaching handler
+    if (!req.dashboardUser || req.dashboardUser.role !== 'super_admin') {
+      return res.status(403).json({
+        error: 'Super admin access required'
+      });
+    }
+
+    console.log(`✅ /api/admin/me: Super admin access confirmed for user: ${req.user.id}`);
+
+    res.json({
+      role: req.dashboardUser.role,
+      client_id: req.dashboardUser.client_id
+    });
+
+  } catch (error) {
+    console.error('❌ /api/admin/me error:', error);
+    res.status(500).json({
+      error: 'Internal server error'
+    });
+  }
+});
+
 // Default widget config
 const DEFAULT_WIDGET_CONFIG = {
   primaryColor: '#2563EB',

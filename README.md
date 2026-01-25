@@ -512,29 +512,135 @@ Get usage statistics for a client.
 
 ## 🔐 Authentication
 
-All endpoints except `/health` and `/api/widget/config` require API key authentication.
+The API supports two authentication methods depending on the use case:
 
-### API Key Format
+### 1. API Key Authentication (Chat Widget & Client API)
+
+Used for public chat widget interactions and client API calls. This method isolates data per client using API key-based access.
+
+#### API Key Format
 ```
 greeto-{32-character-hex-string}
 ```
 
-### How to Authenticate
+#### How to Authenticate
 Include the API key in the request header:
 ```
 X-API-Key: greeto-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-### How to Get an API Key
+#### Protected Endpoints
+- `POST /api/chat` - Send chat messages
+- `GET /api/chat/history/:conversationId` - Retrieve conversation history
+- `POST /api/search` - Search knowledge base
+- `POST /api/admin/clients` - Client management (Admin API)
+- All widget configuration and chat endpoints
+
+#### How to Get an API Key
 1. Call `POST /api/admin/clients` to create a new client
 2. The response includes a unique API key
 3. Use this key for all subsequent requests
 
-### API Key Security
+#### API Key Security
 - Keys are stored securely in Supabase
 - Never commit API keys to version control
 - Rotate keys regularly for active clients
 - Deactivate clients to revoke all their keys
+
+---
+
+### 2. JWT Bearer Token Authentication (Dashboard)
+
+Used for dashboard operations and admin access. Provides role-based access control with automatic Row Level Security (RLS) enforcement via Supabase.
+
+#### Supported Roles
+- **`super_admin`**: Full access to all dashboard functionality (all clients, all data)
+- **`client`**: Restricted to own client data only (enforced by RLS)
+
+#### How to Authenticate
+Include the JWT token in the Authorization header:
+```
+Authorization: Bearer {your-jwt-token}
+```
+
+#### Dashboard Endpoints
+
+##### GET `/api/me`
+Returns the authenticated user's profile information.
+
+**Headers:**
+```
+Authorization: Bearer {jwt-token}
+```
+
+**Response:**
+```json
+{
+  "role": "super_admin",
+  "client_id": 123,
+  "user_name": "John Doe"
+}
+```
+
+**Status Codes:**
+- `200` - User authenticated, profile retrieved
+- `401` - Invalid or expired JWT token
+- `403` - Token valid but no dashboard access configured
+
+##### GET `/api/admin/me`
+Admin-only endpoint. Returns admin user information.
+
+**Headers:**
+```
+Authorization: Bearer {jwt-token}
+```
+
+**Requirements:**
+- User must have `super_admin` role in `dashboard_users` table
+- Validates JWT signature, expiration, and user existence
+
+**Status Codes:**
+- `200` - Admin authenticated
+- `401` - Invalid token
+- `403` - User lacks admin permissions
+
+##### GET `/api/client/me`
+Client-only endpoint. Returns client user information.
+
+**Headers:**
+```
+Authorization: Bearer {jwt-token}
+```
+
+**Requirements:**
+- User must have `client` role in `dashboard_users` table
+- RLS applies: Users can only access their own client data
+
+**Status Codes:**
+- `200` - Client authenticated
+- `401` - Invalid token
+- `403` - User lacks client permissions
+
+#### JWT Token Security
+
+**Token Validation:**
+- Every request validates JWT signature cryptographically
+- Checks token expiration timestamp
+- Confirms user still exists in Supabase Auth
+- Detects revoked tokens
+
+**Best Practices:**
+- Store JWT tokens securely (HttpOnly cookies recommended for web apps)
+- Refresh tokens before expiration
+- Use HTTPS in production to prevent token interception
+- Implement token rotation for long-lived sessions
+- Never expose tokens in URL parameters or logs
+
+#### Data Isolation & RLS
+- Dashboard uses Supabase ANON_KEY with RLS enforcement
+- Each user gets a per-request Supabase client with their JWT token
+- RLS policies automatically restrict data access by role and client_id
+- Server never exposes or returns raw database rows
 
 ---
 
