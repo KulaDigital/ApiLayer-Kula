@@ -2,6 +2,17 @@ import express from 'express';
 import supabase from '../config/database.js';
 import { generateApiKey } from '../utils/apiKeyGenerator.js';
 import { generateEmbedScript, generateInstallInstructions } from '../utils/embedScriptGenerator.js';
+import {
+  getClientIdByCompanyName,
+  addDashboardUser,
+  getDashboardUser,
+  getDashboardUserByClient,
+  getDashboardUsersByClient,
+  updateDashboardUser,
+  deleteDashboardUser,
+  getDashboardUsersByStatus,
+  getClientsByStatus
+} from '../services/dashboardUsersService.js';
 
 const router = express.Router();
 
@@ -100,7 +111,7 @@ router.post('/clients', async (req, res) => {
     }
 
     // Generate embed script
-    const embedScript = `<script src="${process.env.WIDGET_URL || 'http://localhost:3000/widget.js'}" data-api-key="${apiKey}"></script>`;
+    const embedScript = `<script src="${process.env.WIDGET_URL}" data-api-key="${apiKey}"></script>`;
 
     console.log(`✅ Client created successfully (ID: ${client.id})`);
 
@@ -265,32 +276,61 @@ router.put('/clients/:id', async (req, res) => {
 /**
  * DELETE /api/admin/clients/:id
  * Delete client (soft delete - set status to inactive)
+ * Also soft deletes the associated user if one exists
  */
 router.delete('/clients/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Soft delete - set status to inactive
-    const { data: client, error } = await supabase
+    // Get the client to check if it has an associated user
+    const { data: client, error: getError } = await supabase
       .from('clients')
-      .update({ status: 'inactive' })
+      .select('id')
       .eq('id', id)
-      .select()
       .single();
 
-    if (error || !client) {
+    if (getError || !client) {
       return res.status(404).json({
         success: false,
         error: 'Client not found'
       });
     }
 
+    // Get the associated user (if exists)
+    const associatedUser = await getDashboardUserByClient(id);
+
+    // Soft delete the client
+    const { data: deletedClient, error: deleteError } = await supabase
+      .from('clients')
+      .update({ status: 'inactive' })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (deleteError || !deletedClient) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to delete client'
+      });
+    }
+
+    // Soft delete the associated user if exists
+    let deletedUser = null;
+    if (associatedUser) {
+      const userDeleted = await deleteDashboardUser(associatedUser.user_id);
+      if (userDeleted) {
+        deletedUser = associatedUser;
+        console.log(`✅ Associated user ${associatedUser.user_id} also soft deleted`);
+      }
+    }
+
     console.log(`✅ Client ${id} deactivated`);
 
     res.json({
       success: true,
-      message: 'Client deactivated successfully',
-      client
+      message: 'Client and associated user deactivated successfully',
+      client: deletedClient,
+      associatedUser: deletedUser
     });
 
   } catch (error) {
@@ -380,6 +420,499 @@ router.get('/clients/:id/embed-script', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch embed script'
+    });
+  }
+});
+
+// ============================================
+// Clients Status Filter Routes
+// ============================================
+
+/**
+ * GET /api/admin/clients/status/active
+ * Get all active clients
+ */
+router.get('/clients/status/active', async (req, res) => {
+  try {
+    const clients = await getClientsByStatus('active');
+
+    res.json({
+      success: true,
+      status: 'active',
+      count: clients.length,
+      clients
+    });
+
+  } catch (error) {
+    console.error('❌ Get active clients error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/admin/clients/status/inactive
+ * Get all inactive clients
+ */
+router.get('/clients/status/inactive', async (req, res) => {
+  try {
+    const clients = await getClientsByStatus('inactive');
+
+    res.json({
+      success: true,
+      status: 'inactive',
+      count: clients.length,
+      clients
+    });
+
+  } catch (error) {
+    console.error('❌ Get inactive clients error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/admin/clients/status/:status
+ * Get clients by status (dynamic)
+ */
+router.get('/clients/status/:status', async (req, res) => {
+  try {
+    const { status } = req.params;
+
+    if (!['active', 'inactive'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid status. Allowed values: active, inactive`
+      });
+    }
+
+    const clients = await getClientsByStatus(status);
+
+    res.json({
+      success: true,
+      status,
+      count: clients.length,
+      clients
+    });
+
+  } catch (error) {
+    console.error(`❌ Get clients by status error:`, error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+// ============================================
+// Dashboard Users Management Routes
+// ============================================
+
+/**
+ * POST /api/admin/users
+ * Create a new dashboard user
+ * 
+ * Request Body:
+ * {
+ *   "user_id": "uuid",           // Supabase Auth user ID
+ *   "company_name": "string",    // Company name (will look up client_id)
+ *   "role": "string",            // Allowed values: "super_admin", "client"
+ *   "user_name": "string",       // Full name of the user
+ *   "phone_number": "string"     // Optional: Phone number
+ * }
+ * 
+ * Response:
+ * {
+ *   "success": true,
+ *   "message": "Dashboard user created successfully",
+ *   "user": {
+ *     "user_id": "uuid",
+ *     "client_id": number,
+ *     "role": "string",
+ *     "user_name": "string",
+ *     "phone_number": "string|null",
+ *     "created_at": "ISO timestamp"
+ *   }
+ * }
+ */
+router.post('/users', async (req, res) => {
+  try {
+    const { user_id, company_name, role, user_name, phone_number } = req.body;
+
+    // Validation
+    if (!user_id || !company_name || !role || !user_name) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: user_id, company_name, role, user_name'
+      });
+    }
+
+    // Validate role
+    const validRoles = ['super_admin', 'client'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid role '${role}'. Allowed roles: ${validRoles.join(', ')}`
+      });
+    }
+
+    // Get client_id from company_name
+    const client_id = await getClientIdByCompanyName(company_name);
+    if (!client_id) {
+      return res.status(404).json({
+        success: false,
+        error: `Client not found with company_name: ${company_name}`
+      });
+    }
+
+    // Add the user
+    const user = await addDashboardUser({
+      user_id,
+      client_id,
+      role,
+      user_name,
+      phone_number
+    });
+
+    if (!user) {
+      // Check if error is due to one-to-one constraint
+      const existingUser = await getDashboardUserByClient(client_id);
+      if (existingUser) {
+        return res.status(409).json({
+          success: false,
+          error: `Client '${company_name}' already has a user assigned. One client can only have one user.`
+        });
+      }
+      
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to create dashboard user'
+      });
+    }
+
+    console.log(`✅ Dashboard user created: ${user_name}`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Dashboard user created successfully',
+      user
+    });
+
+  } catch (error) {
+    console.error('❌ Create dashboard user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/admin/users
+ * Get all dashboard users
+ */
+router.get('/users', async (req, res) => {
+  try {
+    const { data: users, error } = await supabase
+      .from('dashboard_users')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ Error fetching dashboard users:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch dashboard users'
+      });
+    }
+
+    res.json({
+      success: true,
+      count: users.length,
+      users
+    });
+
+  } catch (error) {
+    console.error('❌ List all dashboard users error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/admin/users/:user_id
+ * Get a specific dashboard user
+ */
+router.get('/users/:user_id', async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    const user = await getDashboardUser(user_id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Dashboard user not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      user
+    });
+
+  } catch (error) {
+    console.error('❌ Get dashboard user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/admin/users/client/:client_id
+ * Get the user for a specific client (one-to-one relationship)
+ */
+router.get('/users/client/:client_id', async (req, res) => {
+  try {
+    const { client_id } = req.params;
+
+    const user = await getDashboardUserByClient(parseInt(client_id));
+
+    if (!user) {
+      return res.status(404).json({
+        success: true,
+        message: 'No user assigned to this client',
+        user: null
+      });
+    }
+
+    res.json({
+      success: true,
+      user
+    });
+
+  } catch (error) {
+    console.error('❌ Get client user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * PUT /api/admin/users/:user_id
+ * Update a dashboard user
+ * 
+ * Request Body (all optional):
+ * {
+ *   "role": "string",            // Allowed values: "super_admin", "client"
+ *   "user_name": "string",
+ *   "phone_number": "string"
+ * }
+ */
+router.put('/users/:user_id', async (req, res) => {
+  try {
+    const { user_id } = req.params;
+    const { role, user_name, phone_number } = req.body;
+
+    // Build update object (only include provided fields)
+    const updates = {};
+    if (role) updates.role = role;
+    if (user_name) updates.user_name = user_name;
+    if (phone_number !== undefined) updates.phone_number = phone_number || null;
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No fields to update'
+      });
+    }
+
+    // Validate role if provided
+    if (role) {
+      const validRoles = ['super_admin', 'client'];
+      if (!validRoles.includes(role)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid role '${role}'. Allowed roles: ${validRoles.join(', ')}`
+        });
+      }
+    }
+
+    const user = await updateDashboardUser(user_id, updates);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Dashboard user not found or update failed'
+      });
+    }
+
+    console.log(`✅ Dashboard user updated: ${user_id}`);
+
+    res.json({
+      success: true,
+      message: 'Dashboard user updated successfully',
+      user
+    });
+
+  } catch (error) {
+    console.error('❌ Update dashboard user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * DELETE /api/admin/users/:user_id
+ * Delete a dashboard user (soft delete - set status to inactive)
+ * Also soft deletes the associated client
+ */
+router.delete('/users/:user_id', async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    // Get the user to find its client
+    const user = await getDashboardUser(user_id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Dashboard user not found'
+      });
+    }
+
+    // Soft delete the user
+    const userDeleted = await deleteDashboardUser(user_id);
+    if (!userDeleted) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to delete dashboard user'
+      });
+    }
+
+    // Soft delete the associated client
+    const { data: deletedClient, error: clientDeleteError } = await supabase
+      .from('clients')
+      .update({ status: 'inactive' })
+      .eq('id', user.client_id)
+      .select()
+      .single();
+
+    if (clientDeleteError) {
+      console.error('⚠️ Warning: Failed to delete associated client:', clientDeleteError);
+    } else if (deletedClient) {
+      console.log(`✅ Associated client ${user.client_id} also soft deleted`);
+    }
+
+    console.log(`✅ Dashboard user deleted: ${user_id}`);
+
+    res.json({
+      success: true,
+      message: 'Dashboard user and associated client deactivated successfully',
+      user,
+      associatedClient: deletedClient || null
+    });
+
+  } catch (error) {
+    console.error('❌ Delete dashboard user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+// ============================================
+// Dashboard Users Status Filter Routes
+// ============================================
+
+/**
+ * GET /api/admin/users/status/active
+ * Get all active dashboard users
+ */
+router.get('/users/status/active', async (req, res) => {
+  try {
+    const users = await getDashboardUsersByStatus('active');
+
+    res.json({
+      success: true,
+      status: 'active',
+      count: users.length,
+      users
+    });
+
+  } catch (error) {
+    console.error('❌ Get active users error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/admin/users/status/inactive
+ * Get all inactive dashboard users
+ */
+router.get('/users/status/inactive', async (req, res) => {
+  try {
+    const users = await getDashboardUsersByStatus('inactive');
+
+    res.json({
+      success: true,
+      status: 'inactive',
+      count: users.length,
+      users
+    });
+
+  } catch (error) {
+    console.error('❌ Get inactive users error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/admin/users/status/:status
+ * Get users by status (dynamic)
+ */
+router.get('/users/status/:status', async (req, res) => {
+  try {
+    const { status } = req.params;
+
+    if (!['active', 'inactive'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid status. Allowed values: active, inactive`
+      });
+    }
+
+    const users = await getDashboardUsersByStatus(status);
+
+    res.json({
+      success: true,
+      status,
+      count: users.length,
+      users
+    });
+
+  } catch (error) {
+    console.error(`❌ Get users by status error:`, error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
     });
   }
 });
