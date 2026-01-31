@@ -406,10 +406,18 @@ Content-Type: application/json
 
 ---
 
-### Admin Endpoints
+### Admin Client Management Endpoints
 
 #### POST `/api/admin/clients`
 Create a new client with auto-generated API key.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Headers:**
+```
+Authorization: Bearer {jwt-token}
+Content-Type: application/json
+```
 
 **Request Body:**
 ```json
@@ -417,7 +425,7 @@ Create a new client with auto-generated API key.
   "company_name": "Acme Corp",
   "website_url": "https://acme.com",
   "widget_config": {
-    "primary_color": "#FF0000",
+    "primaryColor": "#FF0000",
     "position": "bottom-left"
   }
 }
@@ -429,82 +437,455 @@ Create a new client with auto-generated API key.
   "success": true,
   "message": "Client created successfully",
   "client": {
-    "id": "client-uuid",
+    "id": 1,
     "company_name": "Acme Corp",
     "website_url": "https://acme.com",
-    "api_key": "greeto-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+    "api_key": "kula_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
     "widget_config": { ... },
-    "embed_script": "<script src=\"http://localhost:3000/widget.js\" data-api-key=\"greeto-xxx\"></script>",
-    "install_instructions": "1. Copy the embed script...",
-    "created_at": "2026-01-18T10:30:00Z"
-  }
+    "status": "active",
+    "created_at": "2026-01-30T10:00:00Z"
+  },
+  "embed_script": "<script src=\"http://localhost:3000/widget.js\" data-api-key=\"kula_xxx\"></script>",
+  "instructions": "Add the embed_script to your website HTML"
 }
 ```
+
+**Status Codes:**
+- `201` - Client created successfully
+- `400` - Missing required fields
+- `401` - Unauthorized
+- `500` - Server error
 
 ---
 
 #### GET `/api/admin/clients`
-List all clients (paginated).
+List all clients.
 
-**Query Parameters:**
-- `page` (default: 1)
-- `limit` (default: 10)
+**Authentication:** Bearer JWT token (super_admin role required)
 
 **Response:**
 ```json
 {
   "success": true,
-  "clients": [ ... ],
-  "total": 42,
-  "page": 1,
-  "limit": 10
+  "count": 42,
+  "clients": [
+    {
+      "id": 1,
+      "company_name": "Acme Corp",
+      "website_url": "https://acme.com",
+      "api_key": "kula_xxx",
+      "status": "active",
+      "created_at": "2026-01-30T10:00:00Z",
+      "embed_script": "<script ... />"
+    },
+    ...
+  ]
+}
+```
+
+---
+
+#### GET `/api/admin/clients/:id`
+Get single client with installation instructions.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "client": {
+    "id": 1,
+    "company_name": "Acme Corp",
+    "website_url": "https://acme.com",
+    "api_key": "kula_xxx",
+    "status": "active",
+    "embed_script": "<script ... />",
+    "instructions": "Installation instructions...",
+    "created_at": "2026-01-30T10:00:00Z"
+  }
 }
 ```
 
 ---
 
 #### PUT `/api/admin/clients/:id`
-Update client information.
+Update client configuration.
 
-**Request Body:**
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Request Body (all optional):**
 ```json
 {
   "company_name": "Acme Corp Updated",
-  "widget_config": {
-    "welcome_message": "Welcome to Acme!"
-  }
+  "website_url": "https://newurl.com",
+  "widget_config": { ... },
+  "status": "active"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Client updated successfully",
+  "client": { ... }
 }
 ```
 
 ---
 
 #### DELETE `/api/admin/clients/:id`
-Deactivate a client account.
+Soft delete a client (set status to inactive). Also soft deletes associated user if one exists.
+
+**Authentication:** Bearer JWT token (super_admin role required)
 
 **Response:**
 ```json
 {
   "success": true,
-  "message": "Client deactivated successfully"
+  "message": "Client and associated user deactivated successfully",
+  "client": {
+    "id": 1,
+    "status": "inactive",
+    ...
+  },
+  "associatedUser": {
+    "user_id": "...",
+    "status": "inactive",
+    ...
+  }
+}
+```
+
+**Note:** This is a soft delete. Records remain in database with status = inactive.
+
+---
+
+#### POST `/api/admin/clients/:id/regenerate-key`
+Regenerate API key for a client.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "API key regenerated successfully",
+  "api_key": "kula_xxxxxxxxxxxxxxxxxxxxxxxx",
+  "warning": "Update the embed script on the client website with the new API key"
 }
 ```
 
 ---
 
-#### GET `/api/admin/clients/:id/stats`
-Get usage statistics for a client.
+#### GET `/api/admin/clients/:id/embed-script`
+Get only the embed script for a client.
+
+**Authentication:** Bearer JWT token (super_admin role required)
 
 **Response:**
 ```json
 {
   "success": true,
-  "stats": {
-    "totalConversations": 150,
-    "totalMessages": 1230,
-    "contentChunks": 342,
-    "chunksWithEmbeddings": 342,
-    "lastActivity": "2026-01-18T10:30:00Z"
+  "client_name": "Acme Corp",
+  "status": "active",
+  "embed_script": "<script src=\"...\" data-api-key=\"...\"></script>",
+  "instructions": "Installation instructions...",
+  "example": "Example HTML code..."
+}
+```
+
+---
+
+#### GET `/api/admin/clients/status/active`
+Get all active clients.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "active",
+  "count": 5,
+  "clients": [ ... ]
+}
+```
+
+---
+
+#### GET `/api/admin/clients/status/inactive`
+Get all inactive clients.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "inactive",
+  "count": 2,
+  "clients": [ ... ]
+}
+```
+
+---
+
+#### GET `/api/admin/clients/status/:status`
+Get clients by status (dynamic).
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Path Parameters:**
+- `status` (string): `active` or `inactive`
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "active",
+  "count": 5,
+  "clients": [ ... ]
+}
+```
+
+---
+
+### Admin Dashboard Users Management Endpoints
+
+#### POST `/api/admin/users`
+Create a new dashboard user.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Headers:**
+```
+Authorization: Bearer {jwt-token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "company_name": "Acme Corp",
+  "role": "super_admin",
+  "user_name": "John Doe",
+  "phone_number": "+1-234-567-8900"
+}
+```
+
+**Notes:**
+- `user_id`: Supabase Auth user ID (UUID)
+- `company_name`: Must match existing client (auto-lookups client_id)
+- `role`: Only `super_admin` or `client` allowed
+- `phone_number`: Optional
+- **One-to-one constraint:** Each client can only have one user
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Dashboard user created successfully",
+  "user": {
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "client_id": 1,
+    "role": "super_admin",
+    "user_name": "John Doe",
+    "phone_number": "+1-234-567-8900",
+    "status": "active",
+    "created_at": "2026-01-30T10:30:00Z"
   }
+}
+```
+
+**Status Codes:**
+- `201` - User created successfully
+- `400` - Invalid role or missing fields
+- `404` - Company name not found
+- `409` - Client already has a user assigned
+- `500` - Server error
+
+---
+
+#### GET `/api/admin/users`
+Get all dashboard users.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "count": 3,
+  "users": [
+    {
+      "user_id": "550e8400-e29b-41d4-a716-446655440000",
+      "client_id": 1,
+      "role": "super_admin",
+      "user_name": "John Doe",
+      "phone_number": "+1-234-567-8900",
+      "status": "active",
+      "created_at": "2026-01-30T10:30:00Z"
+    },
+    ...
+  ]
+}
+```
+
+---
+
+#### GET `/api/admin/users/:user_id`
+Get a specific dashboard user.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Path Parameters:**
+- `user_id` (UUID): Dashboard user ID
+
+**Response:**
+```json
+{
+  "success": true,
+  "user": { ... }
+}
+```
+
+---
+
+#### GET `/api/admin/users/client/:client_id`
+Get the user assigned to a specific client (one-to-one relationship).
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Path Parameters:**
+- `client_id` (number): Client ID
+
+**Response (User Assigned):**
+```json
+{
+  "success": true,
+  "user": { ... }
+}
+```
+
+**Response (No User Assigned):**
+```json
+{
+  "success": true,
+  "message": "No user assigned to this client",
+  "user": null
+}
+```
+
+---
+
+#### PUT `/api/admin/users/:user_id`
+Update dashboard user (role, name, phone).
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Request Body (all optional):**
+```json
+{
+  "role": "client",
+  "user_name": "Jane Doe",
+  "phone_number": "+1-987-654-3210"
+}
+```
+
+**Notes:**
+- `role`: Only `super_admin` or `client` allowed
+- At least one field required for update
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Dashboard user updated successfully",
+  "user": { ... }
+}
+```
+
+---
+
+#### DELETE `/api/admin/users/:user_id`
+Soft delete a dashboard user (set status to inactive). Also soft deletes associated client.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Dashboard user and associated client deactivated successfully",
+  "user": {
+    "user_id": "...",
+    "status": "inactive",
+    ...
+  },
+  "associatedClient": {
+    "id": 1,
+    "status": "inactive",
+    ...
+  }
+}
+```
+
+**Note:** This is a soft delete. Records remain in database with status = inactive.
+
+---
+
+#### GET `/api/admin/users/status/active`
+Get all active dashboard users.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "active",
+  "count": 5,
+  "users": [ ... ]
+}
+```
+
+---
+
+#### GET `/api/admin/users/status/inactive`
+Get all inactive dashboard users.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "inactive",
+  "count": 2,
+  "users": [ ... ]
+}
+```
+
+---
+
+#### GET `/api/admin/users/status/:status`
+Get users by status (dynamic).
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Path Parameters:**
+- `status` (string): `active` or `inactive`
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "active",
+  "count": 5,
+  "users": [ ... ]
 }
 ```
 
@@ -653,11 +1034,14 @@ node-chatbot-api/
 │   ├── config/
 │   │   └── database.js                 # Supabase client setup
 │   ├── middleware/
-│   │   └── apiKey.js                   # API key authentication
+│   │   ├── apiKey.js                   # API key authentication
+│   │   └── dashboardAuth.js            # JWT Bearer token authentication
 │   ├── routes/
 │   │   ├── chatRoutes.js               # Chat conversation endpoints
 │   │   ├── widgetRoutes.js             # Widget configuration
-│   │   ├── adminRoutes.js              # Client management
+│   │   ├── adminRoutes.js              # Client & user management
+│   │   ├── authRoutes.js               # Authentication endpoints
+│   │   ├── clientRoutes.js             # Client dashboard routes
 │   │   ├── scraperRoutes.js            # Web scraping
 │   │   ├── embeddingRoutes.js          # Vector generation
 │   │   └── searchRoutes.js             # Vector search
@@ -665,7 +1049,8 @@ node-chatbot-api/
 │   │   ├── openaiService.js            # OpenAI integration
 │   │   ├── vectorSearchService.js      # Vector search logic
 │   │   ├── scraperService.js           # Web scraping logic
-│   │   └── chunkingService.js          # Content chunking
+│   │   ├── chunkingService.js          # Content chunking
+│   │   └── dashboardUsersService.js    # Dashboard user management
 │   ├── utils/
 │   │   ├── apiKeyGenerator.js          # Unique key generation
 │   │   ├── embedScriptGenerator.js     # Installation scripts
@@ -675,6 +1060,9 @@ node-chatbot-api/
 ├── .env                                # Environment variables (not in git)
 ├── .gitignore                          # Git exclusions
 ├── package.json                        # Dependencies configuration
+├── API_DOCUMENTATION.md                # Complete API reference
+├── FRONTEND_API_SUMMARY.md             # Frontend-focused API guide
+├── STATUS_API_SUMMARY.md               # Status management guide
 └── README.md                           # This file
 ```
 
@@ -683,9 +1071,12 @@ node-chatbot-api/
 - **app.js**: Main Express application with route registration and middleware setup
 - **database.js**: Initializes Supabase client with connection testing
 - **apiKey.js**: Middleware that validates API keys and injects client context
+- **dashboardAuth.js**: Middleware for JWT Bearer token validation and role-based access control
 - **chatRoutes.js**: Handles message sending, vector search, and chat completions
 - **widgetRoutes.js**: Provides widget configuration for frontend embedding
-- **adminRoutes.js**: CRUD operations for client management
+- **adminRoutes.js**: CRUD operations for client and dashboard user management
+- **authRoutes.js**: Authentication and user profile endpoints
+- **clientRoutes.js**: Client-specific dashboard routes
 - **scraperRoutes.js**: Accepts URLs and scrapes content
 - **embeddingRoutes.js**: Generates embeddings for text chunks
 - **searchRoutes.js**: Performs semantic vector similarity search
@@ -693,6 +1084,7 @@ node-chatbot-api/
 - **vectorSearchService.js**: Supabase RPC calls for semantic search
 - **scraperService.js**: HTML/XML/JSON parsing and chunking
 - **chunkingService.js**: Content segmentation with overlap strategy
+- **dashboardUsersService.js**: Dashboard user CRUD and role validation
 - **apiKeyGenerator.js**: Cryptographically secure key generation
 - **embedScriptGenerator.js**: Generates embed code for clients
 
