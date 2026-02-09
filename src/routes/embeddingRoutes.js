@@ -9,10 +9,28 @@ const router = express.Router();
 /**
  * Test embedding generation
  * POST /api/embeddings/test
+ * 
+ * Auth: 
+ * - Client role: Bearer token (dashboard auth) OR X-API-Key
+ * - Super admin: X-API-Key REQUIRED (to identify which client to work with)
  */
 router.post('/test', async (req, res) => {
     try {
-        console.log('🧪 Test endpoint - req.clientId:', req.clientId);
+        // Validate authentication and client_id
+        if (!req.clientId) {
+            return res.status(401).json({
+                success: false,
+                error: 'X-API-Key header is required for embedding endpoints'
+            });
+        }
+
+        // For super_admin, require X-API-Key (not Bearer token)
+        if (req.userRole === 'super_admin' && req.authType === 'bearer') {
+            return res.status(401).json({
+                success: false,
+                error: 'Super admin users must use X-API-Key header for embedding endpoints'
+            });
+        }
 
         const { text } = req.body;
 
@@ -48,22 +66,32 @@ router.post('/test', async (req, res) => {
 /**
  * Get embedding statistics
  * GET /api/embeddings/stats
+ * 
+ * Auth: 
+ * - Client role: Bearer token (dashboard auth) OR X-API-Key
+ * - Super admin: X-API-Key REQUIRED (to identify which client to work with)
  */
 router.get('/stats', async (req, res) => {
     try {
-        console.log('📊 Stats endpoint - req.clientId:', req.clientId);
-
-        const clientId = req.clientId;
-
-        if (!clientId) {
-            console.error('❌ No clientId in request');
+        // Validate authentication and client_id
+        if (!req.clientId) {
             return res.status(401).json({
                 success: false,
-                error: 'Client ID not found. Ensure API key is valid.'
+                error: 'X-API-Key header is required for embedding endpoints'
             });
         }
 
-        const pendingResult = await embeddingService.getPendingChunksCount(clientId);
+        // For super_admin, require X-API-Key (not Bearer token)
+        if (req.userRole === 'super_admin' && req.authType === 'bearer') {
+            return res.status(401).json({
+                success: false,
+                error: 'Super admin users must use X-API-Key header for embedding endpoints'
+            });
+        }
+
+        console.log('📊 Stats endpoint - clientId:', req.clientId, 'role:', req.userRole);
+
+        const pendingResult = await embeddingService.getPendingChunksCount(req.clientId);
 
         if (!pendingResult.success) {
             return res.status(500).json({
@@ -77,7 +105,7 @@ router.get('/stats', async (req, res) => {
         const { count: totalCount, error: totalError } = await supabase
             .from('content_chunks')
             .select('*', { count: 'exact', head: true })
-            .eq('client_id', clientId);
+            .eq('client_id', req.clientId);
 
         if (totalError) {
             console.error('❌ Error getting total count:', totalError);
@@ -114,25 +142,35 @@ router.get('/stats', async (req, res) => {
 /**
  * Generate embeddings for all pending chunks
  * POST /api/embeddings/generate
+ * 
+ * Auth: 
+ * - Client role: Bearer token (dashboard auth) OR X-API-Key
+ * - Super admin: X-API-Key REQUIRED (to identify which client to work with)
  */
 router.post('/generate', async (req, res) => {
     try {
-        console.log('🚀 Generate endpoint - req.clientId:', req.clientId);
-
-        const clientId = req.clientId;
-
-        if (!clientId) {
-            console.error('❌ No clientId in request');
+        // Validate authentication and client_id
+        if (!req.clientId) {
             return res.status(401).json({
                 success: false,
-                error: 'Client ID not found. Ensure API key is valid.'
+                error: 'X-API-Key header is required for embedding endpoints'
             });
         }
 
-        console.log(`🔍 Checking pending chunks for client: ${clientId}`);
+        // For super_admin, require X-API-Key (not Bearer token)
+        if (req.userRole === 'super_admin' && req.authType === 'bearer') {
+            return res.status(401).json({
+                success: false,
+                error: 'Super admin users must use X-API-Key header for embedding endpoints'
+            });
+        }
+
+        console.log('🚀 Generate endpoint - clientId:', req.clientId, 'role:', req.userRole);
+
+        console.log(`🔍 Checking pending chunks for client: ${req.clientId}`);
 
         // Check pending count first
-        const pendingResult = await embeddingService.getPendingChunksCount(clientId);
+        const pendingResult = await embeddingService.getPendingChunksCount(req.clientId);
 
         if (!pendingResult.success) {
             console.error('❌ Error getting pending chunks:', pendingResult.error);
@@ -155,7 +193,7 @@ router.post('/generate', async (req, res) => {
 
         // Start processing (this will take time)
         console.log(`🚀 Starting embedding generation for ${pendingResult.count} chunks...`);
-        const result = await embeddingService.processAllChunks(clientId);
+        const result = await embeddingService.processAllChunks(req.clientId);
 
         if (!result.success) {
             console.error('❌ Embedding generation failed:', result.error);
@@ -190,18 +228,30 @@ router.post('/generate', async (req, res) => {
 /**
  * Regenerate embeddings for specific URL
  * POST /api/embeddings/regenerate
+ * 
+ * Auth: 
+ * - Client role: Bearer token (dashboard auth) OR X-API-Key
+ * - Super admin: X-API-Key REQUIRED (to identify which client to work with)
  */
 router.post('/regenerate', async (req, res) => {
     try {
-        const clientId = req.clientId;
-        const { url } = req.body;
-
-        if (!clientId) {
+        // Validate authentication and client_id
+        if (!req.clientId) {
             return res.status(401).json({
                 success: false,
-                error: 'Client ID not found'
+                error: 'X-API-Key header is required for embedding endpoints'
             });
         }
+
+        // For super_admin, require X-API-Key (not Bearer token)
+        if (req.userRole === 'super_admin' && req.authType === 'bearer') {
+            return res.status(401).json({
+                success: false,
+                error: 'Super admin users must use X-API-Key header for embedding endpoints'
+            });
+        }
+
+        const { url } = req.body;
 
         if (!url) {
             return res.status(400).json({
@@ -219,7 +269,7 @@ router.post('/regenerate', async (req, res) => {
                 embedding_token_count: null,
                 embedding_generated_at: null
             })
-            .eq('client_id', clientId)
+            .eq('client_id', req.clientId)
             .eq('url', url);
 
         if (deleteError) throw deleteError;
@@ -228,7 +278,7 @@ router.post('/regenerate', async (req, res) => {
         const { data: chunks, error: fetchError } = await supabase
             .from('content_chunks')
             .select('id, chunk_text')
-            .eq('client_id', clientId)
+            .eq('client_id', req.clientId)
             .eq('url', url)
             .order('chunk_index', { ascending: true });
 

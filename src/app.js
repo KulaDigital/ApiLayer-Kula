@@ -13,10 +13,14 @@ import widgetRoutes from './routes/widgetRoutes.js';      // ✅ API-key based
 import adminRoutes from './routes/adminRoutes.js';        // ✅ Dashboard protected routes
 import authRoutes from './routes/authRoutes.js';          // ✅ NEW: /api/me
 import clientRoutes from './routes/clientRoutes.js';      // ✅ NEW: /api/client/* protected
+import leadRoutes from './routes/leadRoutes.js';          // ✅ NEW: Lead capture & retrieval
+import leadAdminRoutes from './routes/leadAdminRoutes.js'; // ✅ NEW: Lead admin endpoints
 
 // Import middleware
 import { apiKeyMiddleware } from './middleware/apiKey.js';
+import { hybridAuthMiddleware } from './middleware/hybridAuth.js';
 import { requireDashboardAuth, requireDashboardRole } from './middleware/dashboardAuth.js';
+import { scraperAuthMiddleware } from './middleware/scraperAuth.js';
 import './config/database.js';
 
 const app = express();
@@ -38,14 +42,19 @@ app.get('/health', (req, res) => {
 app.use('/api', authRoutes);
 
 // Protected Admin Routes: /api/admin/*
-// Requires: valid Bearer token + super_admin role
+// Requires: valid Bearer token + super_admin OR client role (clients can fetch their own data)
 // RLS enforced on all queries via req.supabaseClient
-app.use('/api/admin', requireDashboardAuth, requireDashboardRole(['super_admin']), adminRoutes);
+app.use('/api/admin', requireDashboardAuth, requireDashboardRole(['super_admin', 'client']), adminRoutes);
 
 // Protected Client Routes: /api/client/*
 // Requires: valid Bearer token + client role
 // RLS enforced on all queries via req.supabaseClient
 app.use('/api/client', requireDashboardAuth, requireDashboardRole(['client']), clientRoutes);
+
+// Protected Admin Lead Routes: /api/admin/leads
+// Requires: valid Bearer token + super_admin role
+// Returns leads across all clients
+app.use('/api/admin/leads', requireDashboardAuth, requireDashboardRole(['super_admin']), leadAdminRoutes);
 
 // ============================================
 // Widget & API-Key Based Routes (unchanged)
@@ -57,9 +66,24 @@ app.use('/api/widget', widgetRoutes);
 // ============================================
 // Legacy API Routes (with apiKeyMiddleware)
 // ============================================
-app.use('/api/chat', apiKeyMiddleware, chatRoutes);
-app.use('/api/scraper', apiKeyMiddleware, scraperRoutes);
-app.use('/api/embeddings', apiKeyMiddleware, embeddingRoutes);
+
+// Chat routes: Support BOTH API key (for widget) AND dashboard auth (for super_admin and client)
+// If Bearer token provided: Use dashboard auth + role check
+// If X-API-Key provided: Use API key auth
+app.use('/api/chat', hybridAuthMiddleware, chatRoutes);
+
+// Lead routes: Support BOTH API key (for widget) AND dashboard auth
+// Lead capture (POST /api/leads) and retrieval (GET /api/leads) via hybridAuthMiddleware
+app.use('/api/leads', hybridAuthMiddleware, leadRoutes);
+
+// Scraper routes: Support BOTH Bearer token (recommended) AND X-API-Key (legacy)
+// NEW: Uses scraperAuthMiddleware (supports Bearer token + API key)
+app.use('/api/scraper', scraperAuthMiddleware, scraperRoutes);
+
+// Embedding routes: Support BOTH Bearer token (for client role) AND X-API-Key (for super_admin)
+// NEW: Uses scraperAuthMiddleware (same as scraper routes)
+app.use('/api/embeddings', scraperAuthMiddleware, embeddingRoutes);
+
 app.use('/api/search', apiKeyMiddleware, searchRoutes);
 
 // Error handling middleware

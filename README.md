@@ -87,16 +87,25 @@ feature/xyz → PR → dev → PR → main (Production)
 - **Admin Panel**: Client management, API key generation, and configuration
 
 ### Security
-- API key-based authentication for all protected routes
+- Hybrid authentication supporting both API keys and JWT Bearer tokens
+- Role-based access control (super_admin vs client roles)
 - Client-level data isolation at database query level
 - Service role authentication with Supabase
 - Status validation for active/inactive clients
+- Row-Level Security (RLS) enforcement via Supabase for dashboard access
+
+### Authentication Flexibility
+- **API Key Auth** (X-API-Key): For widget and client API calls
+- **Bearer Token Auth** (JWT): For dashboard and admin operations
+- **Hybrid Support**: Chat and embedding endpoints accept both methods
+- **Role-Based Control**: Different permissions for super_admin vs client roles
 
 ### Performance
 - Memory optimization (4GB heap with garbage collection)
 - Rate limiting for OpenAI API calls (500 RPM conservative limit)
 - Batch processing for embeddings
 - Vector caching and similarity optimization
+- Pagination support for large datasets
 
 ## 🛠 Tech Stack
 
@@ -652,7 +661,530 @@ Get clients by status (dynamic).
 
 ---
 
-### Admin Dashboard Users Management Endpoints
+#### GET `/api/admin/clients/with-subscriptions/:status`
+Get all clients with their subscription details in a single call.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Path Parameters:**
+- `status` (string): `active` or `inactive` (default: `active`)
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "active",
+  "count": 5,
+  "clients": [
+    {
+      "id": 1,
+      "company_name": "Acme Corp",
+      "website_url": "https://acme.com",
+      "api_key": "sk_xxx...",
+      "status": "active",
+      "created_at": "2026-01-31T10:00:00Z",
+      "subscription": {
+        "id": 1,
+        "plan": "professional",
+        "period": "monthly",
+        "status": "active",
+        "is_trial": true,
+        "started_at": "2026-01-31T10:00:00Z",
+        "ends_at": "2026-03-02T10:00:00Z",
+        "is_entitled": true
+      }
+    }
+  ]
+}
+```
+
+---
+
+#### GET `/api/admin/clients/:client_id/conversations`
+Fetch all conversations for a specific client with pagination and filtering.
+
+**Authentication:** Bearer JWT token (super_admin can access any client, client role can only access their own)
+
+**Query Parameters:**
+- `page` (number, default: 1)
+- `limit` (number, default: 20, max: 100)
+- `status` (string, optional): `active` or `closed`
+- `sort` (string, default: `recent`): `recent` or `oldest`
+
+**Response:**
+```json
+{
+  "conversations": [
+    {
+      "id": 1,
+      "client_id": 1,
+      "visitor_id": "visitor-123",
+      "status": "active",
+      "message_count": 5,
+      "created_at": "2026-01-31T10:00:00Z",
+      "last_message_preview": "Thank you for contacting us...",
+      "last_message_at": "2026-01-31T10:15:00Z"
+    }
+  ],
+  "pagination": {
+    "current_page": 1,
+    "total_count": 25,
+    "total_pages": 2,
+    "limit": 20,
+    "has_next": true,
+    "has_previous": false
+  }
+}
+```
+
+---
+
+### Subscription Management Endpoints (MVP)
+
+#### POST `/api/admin/clients/:clientId/subscription`
+Upsert (create or update) subscription for a client.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Request Body:**
+```json
+{
+  "plan": "professional | business | enterprise",
+  "period": "monthly | yearly",
+  "status": "active | inactive",
+  "is_trial": false,
+  "started_at": "2026-01-31T10:00:00Z",
+  "ends_at": "2026-02-28T10:00:00Z"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Subscription upserted successfully",
+  "subscription": {
+    "id": 1,
+    "client_id": 1,
+    "plan": "professional",
+    "period": "monthly",
+    "status": "active",
+    "is_trial": false,
+    "started_at": "2026-01-31T10:00:00Z",
+    "ends_at": "2026-02-28T10:00:00Z",
+    "is_entitled": true
+  }
+}
+```
+
+---
+
+#### POST `/api/admin/clients/:clientId/subscription/cancel`
+Cancel subscription for a client.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Request Body (optional):**
+```json
+{
+  "cancelType": "immediate | end-of-period"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Subscription canceled successfully",
+  "subscription": { ... }
+}
+```
+
+---
+
+#### GET `/api/admin/clients/:clientId/subscription`
+Get subscription for a client.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "subscription": {
+    "id": 1,
+    "client_id": 1,
+    "plan": "professional",
+    "period": "monthly",
+    "status": "active",
+    "is_trial": true,
+    "started_at": "2026-01-31T10:00:00Z",
+    "ends_at": "2026-03-02T10:00:00Z",
+    "is_entitled": true
+  }
+}
+```
+
+---
+
+#### POST `/api/admin/webhooks/subscription-created`
+Handle payment provider webhook for subscription creation (idempotent).
+
+**Authentication:** No auth required (validate from payment provider)
+
+**Request Body:**
+```json
+{
+  "client_id": 1,
+  "stripe_subscription_id": "sub_xxx",
+  "plan": "professional",
+  "period": "monthly",
+  "starts_at": "2026-01-31T10:00:00Z",
+  "ends_at": "2026-02-28T10:00:00Z",
+  "is_trial": false
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Subscription created from webhook",
+  "subscription": { ... }
+}
+```
+
+---
+
+#### POST `/api/admin/webhooks/subscription-canceled`
+Handle payment provider webhook for subscription cancellation (idempotent).
+
+**Request Body:**
+```json
+{
+  "client_id": 1,
+  "cancel_type": "immediate | end-of-period"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Subscription canceled from webhook",
+  "subscription": { ... }
+}
+```
+
+---
+
+#### POST `/api/admin/jobs/expire-subscriptions`
+Scheduled expiry job to mark expired subscriptions as inactive.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Expiry job completed",
+  "updated_count": 3
+}
+```
+
+---
+
+### Lead Management Endpoints
+
+#### POST `/api/leads`
+Capture or upsert a lead from the chat widget.
+
+**Authentication:** X-API-Key header OR Bearer token (hybrid auth)
+
+**Request Body:**
+```json
+{
+  "visitorId": "visitor-123",
+  "name": "John Doe",
+  "email": "john@example.com",
+  "phone": "+1-234-567-8900",
+  "company": "Acme Corp"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "leadId": 1,
+  "message": "Lead created/updated successfully",
+  "lead": {
+    "id": 1,
+    "client_id": 1,
+    "visitor_id": "visitor-123",
+    "conversation_id": null,
+    "name": "John Doe",
+    "email": "john@example.com",
+    "phone": "+1-234-567-8900",
+    "company": "Acme Corp",
+    "status": "new",
+    "created_at": "2026-01-31T10:00:00Z",
+    "updated_at": "2026-01-31T10:00:00Z"
+  }
+}
+```
+
+**Status Codes:**
+- `200` - Lead updated successfully
+- `201` - Lead created successfully
+- `400` - Validation error (missing required fields or invalid email)
+- `401` - Invalid authentication
+- `500` - Server error
+
+---
+
+#### GET `/api/leads`
+List leads with filtering and pagination.
+
+**Authentication:** X-API-Key header OR Bearer token
+
+**Query Parameters:**
+- `q` (string, optional): Search by name, email, or company
+- `from` (ISO date string, optional): Filter by creation date (start)
+- `to` (ISO date string, optional): Filter by creation date (end)
+- `limit` (number, default: 20, max: 100)
+- `offset` (number, default: 0)
+- `sort` (string, default: `newest`): `newest` or `oldest`
+
+**Response:**
+```json
+{
+  "success": true,
+  "items": [
+    {
+      "id": 1,
+      "visitor_id": "visitor-123",
+      "name": "John Doe",
+      "email": "john@example.com",
+      "phone": "+1-234-567-8900",
+      "company": "Acme Corp",
+      "status": "new",
+      "created_at": "2026-01-31T10:00:00Z"
+    }
+  ],
+  "pagination": {
+    "total": 150,
+    "limit": 20,
+    "offset": 0,
+    "hasMore": true
+  }
+}
+```
+
+---
+
+#### GET `/api/leads/:visitorId`
+Get single lead by visitor ID (useful for widget initialization).
+
+**Authentication:** X-API-Key header OR Bearer token
+
+**Response:**
+```json
+{
+  "success": true,
+  "lead": {
+    "id": 1,
+    "visitor_id": "visitor-123",
+    "name": "John Doe",
+    "email": "john@example.com",
+    "phone": "+1-234-567-8900",
+    "company": "Acme Corp",
+    "status": "new",
+    "conversation_id": 5,
+    "created_at": "2026-01-31T10:00:00Z",
+    "updated_at": "2026-01-31T10:00:00Z"
+  }
+}
+```
+
+**Status Codes:**
+- `200` - Lead found
+- `404` - Lead not found
+- `401` - Invalid authentication
+- `500` - Server error
+
+---
+
+#### PUT `/api/leads/:visitorId`
+Update lead details (name, email, phone, company).
+
+**Authentication:** X-API-Key header OR Bearer token
+
+**Request Body (at least 1 field required):**
+```json
+{
+  "name": "Jane Doe",
+  "email": "jane@example.com",
+  "phone": "+1-987-654-3210",
+  "company": "New Company"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Lead updated successfully",
+  "lead": { ... }
+}
+```
+
+**Notes:**
+- `status` and `conversation_id` cannot be changed via this endpoint (protected fields)
+- Partial updates supported (provide only fields to change)
+
+---
+
+#### PUT `/api/leads/:visitorId/status`
+Update lead status through the lifecycle.
+
+**Authentication:** X-API-Key header OR Bearer token
+
+**Request Body:**
+```json
+{
+  "status": "new | contacted | qualified | won | lost"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Lead status updated successfully",
+  "lead": { ... }
+}
+```
+
+**Allowed Status Values:**
+- `new`: Initial state (default)
+- `contacted`: Sales has reached out
+- `qualified`: Lead is sales-qualified
+- `won`: Became a customer
+- `lost`: Not pursuing
+
+---
+
+#### GET `/api/admin/leads`
+Admin endpoint - view all leads across all clients.
+
+**Authentication:** Bearer JWT token (super_admin role required)
+
+**Query Parameters:**
+- `clientId` (number, optional): Filter by specific client
+- `q` (string, optional): Search query
+- `from` (ISO date string, optional): Start date filter
+- `to` (ISO date string, optional): End date filter
+- `limit` (number, default: 20)
+- `offset` (number, default: 0)
+
+**Response:**
+```json
+{
+  "success": true,
+  "items": [
+    {
+      "id": 1,
+      "client_id": 1,
+      "visitor_id": "visitor-123",
+      "name": "John Doe",
+      "email": "john@example.com",
+      "status": "new",
+      "created_at": "2026-01-31T10:00:00Z"
+    }
+  ],
+  "pagination": { ... }
+}
+```
+
+---
+
+### Authentication & User Profile Endpoints
+
+#### GET `/api/me`
+Get current user's profile and subscription status (requires valid Bearer token).
+
+**Authentication:** Bearer JWT token
+
+**Response:**
+```json
+{
+  "role": "super_admin | client",
+  "client_id": 1,
+  "user_name": "John Doe",
+  "subscription": {
+    "plan": "professional",
+    "period": "monthly",
+    "status": "active",
+    "is_trial": true,
+    "started_at": "2026-01-31T10:00:00Z",
+    "ends_at": "2026-03-02T10:00:00Z",
+    "is_active": true
+  },
+  "has_subscription": true
+}
+```
+
+---
+
+#### GET `/api/client/me`
+Get client-specific user profile and subscription (client role required).
+
+**Authentication:** Bearer JWT token (client role required)
+
+**Response:**
+```json
+{
+  "role": "client",
+  "client_id": 1,
+  "subscription": { ... },
+  "has_subscription": true
+}
+```
+
+---
+
+#### GET `/api/client/conversations`
+Get all conversations for the logged-in client with pagination.
+
+**Authentication:** Bearer JWT token (client role required)
+
+**Query Parameters:**
+- `page` (number, default: 1)
+- `limit` (number, default: 20)
+- `status` (string, optional): `active` or `closed`
+- `sort` (string, default: `recent`): `recent` or `oldest`
+
+**Response:**
+```json
+{
+  "conversations": [
+    {
+      "id": 1,
+      "client_id": 1,
+      "visitor_id": "visitor-123",
+      "status": "active",
+      "message_count": 5,
+      "created_at": "2026-01-31T10:00:00Z",
+      "last_message_preview": "Thank you...",
+      "last_message_at": "2026-01-31T10:15:00Z"
+    }
+  ],
+  "pagination": { ... }
+}
+```
+
+---
 
 #### POST `/api/admin/users`
 Create a new dashboard user.
@@ -893,9 +1425,9 @@ Get users by status (dynamic).
 
 ## 🔐 Authentication
 
-The API supports two authentication methods depending on the use case:
+The API supports three authentication methods depending on the use case and endpoint:
 
-### 1. API Key Authentication (Chat Widget & Client API)
+### 1. API Key Authentication (X-API-Key)
 
 Used for public chat widget interactions and client API calls. This method isolates data per client using API key-based access.
 
@@ -914,13 +1446,9 @@ X-API-Key: greeto-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 - `POST /api/chat` - Send chat messages
 - `GET /api/chat/history/:conversationId` - Retrieve conversation history
 - `POST /api/search` - Search knowledge base
-- `POST /api/admin/clients` - Client management (Admin API)
-- All widget configuration and chat endpoints
-
-#### How to Get an API Key
-1. Call `POST /api/admin/clients` to create a new client
-2. The response includes a unique API key
-3. Use this key for all subsequent requests
+- `POST /api/leads` - Capture leads
+- `GET /api/leads/:visitorId` - Retrieve lead data
+- All widget configuration endpoints
 
 #### API Key Security
 - Keys are stored securely in Supabase
@@ -930,7 +1458,7 @@ X-API-Key: greeto-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ---
 
-### 2. JWT Bearer Token Authentication (Dashboard)
+### 2. Bearer Token Authentication (JWT)
 
 Used for dashboard operations and admin access. Provides role-based access control with automatic Row Level Security (RLS) enforcement via Supabase.
 
@@ -944,7 +1472,72 @@ Include the JWT token in the Authorization header:
 Authorization: Bearer {your-jwt-token}
 ```
 
-#### Dashboard Endpoints
+#### JWT Token Security
+
+**Token Validation:**
+- Every request validates JWT signature cryptographically
+- Checks token expiration timestamp
+- Confirms user still exists in Supabase Auth
+- Detects revoked tokens
+
+**Best Practices:**
+- Store JWT tokens securely (HttpOnly cookies recommended for web apps)
+- Refresh tokens before expiration
+- Use HTTPS in production to prevent token interception
+- Implement token rotation for long-lived sessions
+- Never expose tokens in URL parameters or logs
+
+#### Data Isolation & RLS
+- Dashboard uses Supabase ANON_KEY with RLS enforcement
+- Each user gets a per-request Supabase client with their JWT token
+- RLS policies automatically restrict data access by role and client_id
+- Server never exposes or returns raw database rows
+
+---
+
+### 3. Hybrid Authentication (API Key + Bearer Token)
+
+Certain endpoints support **both** API key and Bearer token authentication. Priority is given to Bearer token if both are provided.
+
+#### Endpoints with Hybrid Auth
+
+**Chat Routes** (`/api/chat`, `/api/leads`):
+- ✅ Widget/Client requests: Use `X-API-Key` header
+- ✅ Dashboard requests: Use `Authorization: Bearer {token}` header
+
+**Scraper Routes** (`/api/scraper/scrape-batch`, `/api/scraper/crawl-domain`):
+- ✅ Client with Bearer token: Works (identifies client from dashboard_users)
+- ✅ Client with X-API-Key: Works (identifies client from API key)
+- ❌ Super admin with Bearer token: Fails (super admin has no client_id)
+- ✅ Super admin with X-API-Key: Works (must create client first, then use its API key)
+
+**Embedding Routes** (`/api/embeddings/generate`, `/api/embeddings/stats`):
+- ✅ Client with Bearer token: Works (identified from dashboard_users)
+- ✅ Client with X-API-Key: Works (identified from API key)
+- ❌ Super admin with Bearer token: Fails (super admin has no client_id)
+- ✅ Super admin with X-API-Key: Works (must use client's API key)
+
+#### How Hybrid Auth Works
+
+1. **Bearer Token (Priority 1)**
+   - If `Authorization: Bearer {token}` header present
+   - Validate token with Supabase Auth
+   - Lookup user in `dashboard_users` table
+   - Extract `role` and `client_id`
+   - Set `req.userRole` and `req.clientId`
+
+2. **API Key (Priority 2 - Fallback)**
+   - If no Bearer token but `X-API-Key` header present
+   - Validate API key against `clients` table
+   - Extract `client_id` from matching client
+   - Set `req.clientId` (no role information)
+
+3. **Failure**
+   - Return 401 if neither authentication method provided
+
+---
+
+#### Dashboard Endpoints (Bearer Token Only)
 
 ##### GET `/api/me`
 Returns the authenticated user's profile information.
@@ -1002,27 +1595,6 @@ Authorization: Bearer {jwt-token}
 - `401` - Invalid token
 - `403` - User lacks client permissions
 
-#### JWT Token Security
-
-**Token Validation:**
-- Every request validates JWT signature cryptographically
-- Checks token expiration timestamp
-- Confirms user still exists in Supabase Auth
-- Detects revoked tokens
-
-**Best Practices:**
-- Store JWT tokens securely (HttpOnly cookies recommended for web apps)
-- Refresh tokens before expiration
-- Use HTTPS in production to prevent token interception
-- Implement token rotation for long-lived sessions
-- Never expose tokens in URL parameters or logs
-
-#### Data Isolation & RLS
-- Dashboard uses Supabase ANON_KEY with RLS enforcement
-- Each user gets a per-request Supabase client with their JWT token
-- RLS policies automatically restrict data access by role and client_id
-- Server never exposes or returns raw database rows
-
 ---
 
 ## 📁 Project Structure
@@ -1034,14 +1606,18 @@ node-chatbot-api/
 │   ├── config/
 │   │   └── database.js                 # Supabase client setup
 │   ├── middleware/
-│   │   ├── apiKey.js                   # API key authentication
-│   │   └── dashboardAuth.js            # JWT Bearer token authentication
+│   │   ├── apiKey.js                   # API key authentication (X-API-Key)
+│   │   ├── dashboardAuth.js            # JWT Bearer token authentication
+│   │   ├── hybridAuth.js               # ✅ NEW: Hybrid auth (Bearer + API key)
+│   │   └── scraperAuth.js              # ✅ NEW: Scraper auth with role support
 │   ├── routes/
 │   │   ├── chatRoutes.js               # Chat conversation endpoints
 │   │   ├── widgetRoutes.js             # Widget configuration
-│   │   ├── adminRoutes.js              # Client & user management
-│   │   ├── authRoutes.js               # Authentication endpoints
+│   │   ├── adminRoutes.js              # Client & user management (+ subscriptions)
+│   │   ├── authRoutes.js               # Authentication & /api/me endpoint
 │   │   ├── clientRoutes.js             # Client dashboard routes
+│   │   ├── leadRoutes.js               # ✅ NEW: Lead capture & retrieval
+│   │   ├── leadAdminRoutes.js          # ✅ NEW: Lead admin endpoints
 │   │   ├── scraperRoutes.js            # Web scraping
 │   │   ├── embeddingRoutes.js          # Vector generation
 │   │   └── searchRoutes.js             # Vector search
@@ -1050,19 +1626,28 @@ node-chatbot-api/
 │   │   ├── vectorSearchService.js      # Vector search logic
 │   │   ├── scraperService.js           # Web scraping logic
 │   │   ├── chunkingService.js          # Content chunking
-│   │   └── dashboardUsersService.js    # Dashboard user management
+│   │   ├── dashboardUsersService.js    # Dashboard user management
+│   │   ├── leadsService.js             # ✅ NEW: Lead CRUD & validation
+│   │   └── subscriptionService.js      # ✅ NEW: Subscription management
 │   ├── utils/
 │   │   ├── apiKeyGenerator.js          # Unique key generation
 │   │   ├── embedScriptGenerator.js     # Installation scripts
 │   │   └── memoryManager.js            # Memory optimization
 │   └── data/
 │       └── kula_scraped_chunks.json    # Sample knowledge base
+├── migrations/
+│   └── 001_create_leads_table.sql      # ✅ NEW: Lead table schema
 ├── .env                                # Environment variables (not in git)
 ├── .gitignore                          # Git exclusions
 ├── package.json                        # Dependencies configuration
 ├── API_DOCUMENTATION.md                # Complete API reference
 ├── FRONTEND_API_SUMMARY.md             # Frontend-focused API guide
-├── STATUS_API_SUMMARY.md               # Status management guide
+├── LEAD_API_SUMMARY_FOR_FRONTEND.md    # ✅ NEW: Lead API guide for frontend
+├── LEAD_UPDATE_ENDPOINT.md             # ✅ NEW: Lead update endpoint docs
+├── LEAD_STATUS_UPDATE.md               # ✅ NEW: Lead status feature docs
+├── ROLE_BASED_API_BEHAVIOR.md          # ✅ NEW: Role-based API behavior
+├── EMBEDDING_BEARER_TOKEN_UPDATE.md    # ✅ NEW: Bearer token for embeddings
+├── EMBEDDING_GENERATE_API.md           # ✅ NEW: Generate embeddings endpoint
 └── README.md                           # This file
 ```
 
@@ -1072,21 +1657,28 @@ node-chatbot-api/
 - **database.js**: Initializes Supabase client with connection testing
 - **apiKey.js**: Middleware that validates API keys and injects client context
 - **dashboardAuth.js**: Middleware for JWT Bearer token validation and role-based access control
+- **hybridAuth.js** (✅ NEW): Accepts both Bearer token and API key, priority to Bearer
+- **scraperAuth.js** (✅ NEW): Bearer token + API key support with role-based role checking
 - **chatRoutes.js**: Handles message sending, vector search, and chat completions
 - **widgetRoutes.js**: Provides widget configuration for frontend embedding
-- **adminRoutes.js**: CRUD operations for client and dashboard user management
+- **adminRoutes.js**: CRUD operations for clients, users, and subscriptions
 - **authRoutes.js**: Authentication and user profile endpoints
 - **clientRoutes.js**: Client-specific dashboard routes
+- **leadRoutes.js** (✅ NEW): Lead capture, retrieval, and updates via hybrid auth
+- **leadAdminRoutes.js** (✅ NEW): Cross-client lead viewing for super_admin
 - **scraperRoutes.js**: Accepts URLs and scrapes content
-- **embeddingRoutes.js**: Generates embeddings for text chunks
+- **embeddingRoutes.js**: Generates embeddings for text chunks (with Bearer token support)
 - **searchRoutes.js**: Performs semantic vector similarity search
 - **openaiService.js**: Wraps OpenAI API calls for chat and embeddings
 - **vectorSearchService.js**: Supabase RPC calls for semantic search
 - **scraperService.js**: HTML/XML/JSON parsing and chunking
 - **chunkingService.js**: Content segmentation with overlap strategy
 - **dashboardUsersService.js**: Dashboard user CRUD and role validation
+- **leadsService.js** (✅ NEW): 8 functions for lead CRUD, validation, status, and auto-linking
+- **subscriptionService.js** (✅ NEW): Subscription CRUD, formatting, and webhook handling
 - **apiKeyGenerator.js**: Cryptographically secure key generation
 - **embedScriptGenerator.js**: Generates embed code for clients
+- **001_create_leads_table.sql** (✅ NEW): Database schema with constraints and triggers
 
 ---
 
@@ -1097,7 +1689,7 @@ node-chatbot-api/
 #### `clients`
 Stores client/company information and configuration.
 ```sql
-id (UUID, Primary Key)
+id (BIGINT, Primary Key)
 company_name (VARCHAR)
 website_url (VARCHAR)
 api_key (VARCHAR, Unique, Indexed)
@@ -1110,19 +1702,20 @@ updated_at (TIMESTAMP)
 #### `conversations`
 Stores chat conversations per client.
 ```sql
-id (UUID, Primary Key)
-client_id (UUID, Foreign Key)
+id (BIGINT, Primary Key)
+client_id (BIGINT, Foreign Key)
 visitor_id (VARCHAR)
 status (VARCHAR: 'active' | 'closed')
 created_at (TIMESTAMP)
 updated_at (TIMESTAMP)
+last_message_at (TIMESTAMP, Nullable)
 ```
 
 #### `messages`
 Stores individual messages in conversations.
 ```sql
-id (UUID, Primary Key)
-conversation_id (UUID, Foreign Key)
+id (BIGINT, Primary Key)
+conversation_id (BIGINT, Foreign Key)
 role (VARCHAR: 'user' | 'assistant')
 content (TEXT)
 created_at (TIMESTAMP)
@@ -1131,8 +1724,8 @@ created_at (TIMESTAMP)
 #### `content_chunks`
 Stores scraped content with embeddings.
 ```sql
-id (UUID, Primary Key)
-client_id (UUID, Foreign Key)
+id (BIGINT, Primary Key)
+client_id (BIGINT, Foreign Key)
 url (VARCHAR)
 page_title (VARCHAR)
 chunk_text (TEXT)
@@ -1141,13 +1734,66 @@ chunk_order (INTEGER)
 created_at (TIMESTAMP)
 ```
 
-### Vector Similarity Function (RPC)
+#### `leads` (✅ NEW)
+Stores lead/prospect information captured from chat widget.
+```sql
+id (BIGINT, Primary Key)
+client_id (BIGINT, Foreign Key, Indexed)
+visitor_id (VARCHAR, Indexed)
+conversation_id (BIGINT, Foreign Key, Nullable)
+name (VARCHAR)
+email (VARCHAR, Indexed)
+phone (VARCHAR, Nullable)
+company (VARCHAR, Nullable)
+status (VARCHAR: 'new' | 'contacted' | 'qualified' | 'won' | 'lost', Default: 'new')
+created_at (TIMESTAMP)
+updated_at (TIMESTAMP, Auto-updated by trigger)
+
+Constraints:
+  - Unique: (client_id, visitor_id) - One lead per visitor per client
+  - Foreign Keys with CASCADE/SET NULL to handle deletions
+```
+
+#### `client_subscriptions` (✅ NEW)
+Stores subscription information for each client.
+```sql
+id (BIGINT, Primary Key)
+client_id (BIGINT, Foreign Key, Unique)
+plan (VARCHAR: 'professional' | 'business' | 'enterprise')
+period (VARCHAR: 'monthly' | 'yearly')
+status (VARCHAR: 'active' | 'inactive' | 'expired' | 'canceled' | 'pending_cancellation')
+is_trial (BOOLEAN, Default: false)
+started_at (TIMESTAMP)
+ends_at (TIMESTAMP)
+canceled_at (TIMESTAMP, Nullable)
+created_at (TIMESTAMP)
+updated_at (TIMESTAMP)
+```
+
+#### `dashboard_users`
+Stores dashboard access for admin and client users.
+```sql
+user_id (UUID, Primary Key - Supabase Auth user ID)
+client_id (BIGINT, Foreign Key, Nullable)
+role (VARCHAR: 'super_admin' | 'client')
+user_name (VARCHAR)
+phone_number (VARCHAR, Nullable)
+status (VARCHAR: 'active' | 'inactive')
+created_at (TIMESTAMP)
+updated_at (TIMESTAMP)
+
+Constraints:
+  - Unique: (client_id) - One user per client maximum
+  - super_admin users have client_id = NULL
+```
+
+### Database Functions (RPC)
 
 #### `search_similar_chunks`
 PostgreSQL function for semantic similarity search.
 ```sql
 Parameters:
-  - match_client_id (UUID)
+  - match_client_id (BIGINT)
   - query_embedding (vector)
   - match_threshold (FLOAT, 0-1)
   - match_count (INTEGER)
@@ -1155,7 +1801,33 @@ Parameters:
 Returns: Similar chunks ranked by similarity score
 ```
 
----
+### Indexes
+
+Key indexes for performance optimization:
+```sql
+- clients (api_key) - Fast API key lookup
+- leads (client_id) - Fast lead filtering by client
+- leads (visitor_id) - Fast lead lookup by visitor
+- leads (email) - Fast lead lookup by email
+- content_chunks (client_id) - Fast content filtering
+- conversations (client_id) - Fast conversation filtering
+- messages (conversation_id) - Fast message retrieval
+- client_subscriptions (client_id) - Fast subscription lookup
+```
+
+### Triggers
+
+#### Auto-update timestamp
+Automatically updates `updated_at` timestamp when record changes:
+```sql
+- leads table
+- conversations table
+- messages table
+- content_chunks table
+```
+
+#### Auto-link conversation to lead
+When user sends first message in chat, automatically links conversation to existing lead if one exists (non-blocking, errors don't fail chat).
 
 ## 💻 Development
 

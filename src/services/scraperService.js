@@ -565,6 +565,7 @@ class ScraperService {
             .single();
 
         if (jobError) {
+            console.error('Scraping job creation error:', jobError);
             throw new Error('Failed to create scraping job');
         }
 
