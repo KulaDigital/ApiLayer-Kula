@@ -7,19 +7,17 @@ const router = express.Router();
 /**
  * Test vector similarity search
  * POST /api/search/test
+ * 
+ * Auth: X-API-Key header (client API key)
+ * Middleware automatically extracts client_id from the API key
  */
 router.post('/test', async (req, res) => {
   try {
     const { 
       query, 
       matchThreshold = 0.4,
-      matchCount = 5 
+      matchCount = 5
     } = req.body;
-
-    console.log(`🔍 Search query: "${query}"`);
-    console.log(`🎯 Threshold: ${matchThreshold}, Count: ${matchCount}`);
-
-    // Generate embedding
     const embeddingResult = await embeddingService.generateEmbedding(query);
     
     if (!embeddingResult.success) {
@@ -66,11 +64,13 @@ router.post('/test', async (req, res) => {
 /**
  * Get search statistics
  * GET /api/search/stats
+ * 
+ * Auth: X-API-Key header (client API key)
+ * Middleware automatically extracts client_id from the API key
  */
 router.get('/stats', async (req, res) => {
   try {
-    const clientId = req.clientId;
-    const result = await vectorSearchService.getStats(clientId);
+    const result = await vectorSearchService.getStats(req.clientId);
 
     if (!result.success) {
       return res.status(500).json(result);
