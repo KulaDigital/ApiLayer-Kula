@@ -137,6 +137,7 @@ router.post('/clients', async (req, res) => {
         website_url,
         api_key: apiKey,
         widget_config: finalConfig,
+        starter_suggestions: null,
         status: 'active',
         created_at: new Date().toISOString()
       })
@@ -174,6 +175,7 @@ router.post('/clients', async (req, res) => {
         website_url: client.website_url,
         api_key: client.api_key,
         widget_config: client.widget_config,
+        starter_suggestions: client.starter_suggestions,
         status: client.status,
         created_at: client.created_at
       },
@@ -199,7 +201,7 @@ router.get('/clients', async (req, res) => {
   try {
     const { data: clients, error } = await supabase
       .from('clients')
-      .select('id, company_name, website_url, api_key, widget_config, status, created_at')
+      .select('id, company_name, website_url, api_key, widget_config, starter_suggestions, status, created_at')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -287,7 +289,7 @@ router.get('/clients/:id', async (req, res) => {
 router.put('/clients/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { company_name, website_url, widget_config, status } = req.body;
+    const { company_name, website_url, widget_config, status, starter_suggestions } = req.body;
 
     // Build update object (only include provided fields)
     const updates = {};
@@ -295,6 +297,7 @@ router.put('/clients/:id', async (req, res) => {
     if (website_url) updates.website_url = website_url;
     if (widget_config) updates.widget_config = widget_config;
     if (status) updates.status = status;
+    if (starter_suggestions !== undefined) updates.starter_suggestions = starter_suggestions;
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({

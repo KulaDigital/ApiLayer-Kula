@@ -4,7 +4,7 @@
 export const hybridAuthMiddleware = async (req, res, next) => {
   try {
     const bearerToken = req.headers.authorization?.split(' ')[1];
-    const apiKey = req.headers['x-api-key'];
+    const apiKey = req.headers['x-api-key']?.trim();
 
     // ✅ Try bearer token first (dashboard auth)
     if (bearerToken) {
@@ -43,6 +43,7 @@ export const hybridAuthMiddleware = async (req, res, next) => {
         req.dashboardUser = dashboardUser;
         req.user = user;
         req.authType = 'bearer-token';
+        req.clientId = dashboardUser.client_id;  // ✅ Set client_id from dashboard user
         req.supabaseClient = supabase;
 
         return next();
@@ -60,28 +61,52 @@ export const hybridAuthMiddleware = async (req, res, next) => {
       
       const supabase = (await import('../config/database.js')).default;
       
-      const { data: client, error } = await supabase
-        .from('clients')
-        .select('id, company_name, api_key, website_url')
-        .eq('api_key', apiKey)
-        .single();
+      try {
+        const { data: client, error } = await supabase
+          .from('clients')
+          .select('id, company_name, api_key, website_url')
+          .eq('api_key', apiKey)
+          .single();
 
-      if (error || !client) {
-        console.log('❌ Invalid API key');
-        return res.status(401).json({
-          error: 'Invalid API key'
+        if (error) {
+          console.error('❌ Supabase query error:', {
+            message: error.message,
+            code: error.code,
+            hint: error.hint,
+            details: error.details
+          });
+          return res.status(401).json({
+            error: 'Invalid API key',
+            details: error.message
+          });
+        }
+
+        if (!client) {
+          console.log('❌ Invalid API key - no client found');
+          return res.status(401).json({
+            error: 'Invalid API key'
+          });
+        }
+
+        console.log(`✅ API Key validated for client: ${client.company_name} (ID: ${client.id})`);
+
+        // Set clientId for API key auth
+        req.clientId = client.id;
+        req.clientName = client.company_name;
+        req.authType = 'api-key';
+        req.supabaseClient = supabase;
+
+        return next();
+      } catch (err) {
+        console.error('❌ API key auth error:', {
+          message: err.message,
+          stack: err.stack
+        });
+        return res.status(500).json({
+          error: 'Authentication service error',
+          details: err.message
         });
       }
-
-      console.log(`✅ API Key validated for client: ${client.company_name} (ID: ${client.id})`);
-
-      // Set clientId for API key auth
-      req.clientId = client.id;
-      req.clientName = client.company_name;
-      req.authType = 'api-key';
-      req.supabaseClient = supabase;
-
-      return next();
     }
 
     // ❌ No auth method provided

@@ -1445,6 +1445,7 @@ X-API-Key: greeto-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 #### Protected Endpoints
 - `POST /api/chat` - Send chat messages
 - `GET /api/chat/history/:conversationId` - Retrieve conversation history
+- `GET /api/chat/client-status` - Get client & subscription status (uses API key)
 - `POST /api/search` - Search knowledge base
 - `POST /api/leads` - Capture leads
 - `GET /api/leads/:visitorId` - Retrieve lead data
