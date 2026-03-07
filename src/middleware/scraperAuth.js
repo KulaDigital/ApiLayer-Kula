@@ -34,7 +34,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
 export const scraperAuthMiddleware = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-    const apiKeyHeader = req.headers['x-api-key'];
+    const apiKeyHeader = req.headers['x-api-key']?.trim();
 
     // ============================================
     // TRY BEARER TOKEN FIRST (Priority 1)

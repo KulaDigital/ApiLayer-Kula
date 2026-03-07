@@ -27,7 +27,7 @@ const router = express.Router();
 router.get('/config', async (req, res) => {
   try {
     // Get API key from header
-    const apiKey = req.headers['x-api-key'];
+    const apiKey = req.headers['x-api-key']?.trim();
 
     if (!apiKey) {
       return res.status(400).json({
@@ -41,12 +41,27 @@ router.get('/config', async (req, res) => {
     // Query client with this API key
     const { data: client, error } = await supabase
       .from('clients')
-      .select('id, company_name, website_url, widget_config, status')
+      .select('id, company_name, website_url, widget_config, starter_suggestions, status')
       .eq('api_key', apiKey)
       .single();
 
-    if (error || !client) {
+    if (error) {
+      console.error(`❌ Supabase query error for API key: ${apiKey}`, {
+        message: error.message,
+        code: error.code,
+        hint: error.hint,
+        details: error.details
+      });
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid API key',
+        debug: error.message
+      });
+    }
+
+    if (!client) {
       console.log(`❌ Invalid API key: ${apiKey}`);
+      console.log(`   Key length: ${apiKey.length}`);
       return res.status(401).json({
         success: false,
         error: 'Invalid API key'
@@ -76,7 +91,8 @@ router.get('/config', async (req, res) => {
     res.json({
       success: true,
       client_name: client.company_name,
-      widget_config: widgetConfig
+      widget_config: widgetConfig,
+      starter_suggestions: client.starter_suggestions
     });
 
   } catch (error) {

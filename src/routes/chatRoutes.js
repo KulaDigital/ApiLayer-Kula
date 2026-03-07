@@ -9,8 +9,8 @@ const router = express.Router();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // GET /api/chat/history/:conversationId - Fetch conversation history
-// Auth: X-API-Key header (client API key)
-// Middleware automatically extracts client_id from the API key
+// Auth: X-API-Key header (client API key) or Bearer token
+// Middleware automatically extracts client_id from the API key or dashboard user
 router.get('/history/:conversationId', async (req, res) => {
   try {
     const { conversationId } = req.params;
@@ -64,6 +64,64 @@ router.get('/history/:conversationId', async (req, res) => {
       error: 'Failed to fetch conversation history',
       messages: []
     });
+  }
+});
+
+/**
+ * GET /api/chat/client-status
+ * Returns the status fields for the authenticated client and their subscription.
+ *
+ * Authentication: hybridAuthMiddleware (supports X-API-Key for widget and
+ *                 dashboard Bearer tokens).  `req.clientId` is populated.
+ *
+ * Response:
+ * {
+ *   "success": true,
+ *   "client_status": "active" | "inactive" | "pending" | "trial" | ...,
+ *   "subscription_status": "active" | "inactive" | "canceled" | "pending_cancellation" | null
+ * }
+ */
+router.get('/client-status', async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(401).json({ success: false, error: 'Client not authenticated' });
+    }
+
+    // fetch client status
+    const { data: client, error: clientError } = await req.supabaseClient
+      .from('clients')
+      .select('status')
+      .eq('id', clientId)
+      .single();
+
+    if (clientError || !client) {
+      console.error('❌ Failed to fetch client status:', clientError);
+      return res.status(500).json({ success: false, error: 'Unable to retrieve client status' });
+    }
+
+    // fetch subscription status (may not exist)
+    const { data: subscription, error: subError } = await req.supabaseClient
+      .from('client_subscriptions')
+      .select('status')
+      .eq('client_id', clientId)
+      .single();
+
+    if (subError && subError.code !== 'PGRST116') {
+      // PGRST116 = no rows
+      console.error('❌ Failed to fetch subscription status:', subError);
+      return res.status(500).json({ success: false, error: 'Unable to retrieve subscription status' });
+    }
+
+    res.json({
+      success: true,
+      client_status: client.status,
+      subscription_status: subscription ? subscription.status : null
+    });
+
+  } catch (error) {
+    console.error('❌ /api/chat/client-status error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 

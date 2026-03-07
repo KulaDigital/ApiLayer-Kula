@@ -140,7 +140,7 @@ router.get('/stats', async (req, res) => {
 });
 
 /**
- * Generate embeddings for all pending chunks
+ * Generate embeddings for all pending chunks (async - returns jobId)
  * POST /api/embeddings/generate
  * 
  * Auth: 
@@ -167,60 +167,75 @@ router.post('/generate', async (req, res) => {
 
         console.log('🚀 Generate endpoint - clientId:', req.clientId, 'role:', req.userRole);
 
-        console.log(`🔍 Checking pending chunks for client: ${req.clientId}`);
+        const result = await embeddingService.startEmbeddingJob(req.clientId);
 
-        // Check pending count first
-        const pendingResult = await embeddingService.getPendingChunksCount(req.clientId);
-
-        if (!pendingResult.success) {
-            console.error('❌ Error getting pending chunks:', pendingResult.error);
-            return res.status(500).json({
-                success: false,
-                error: 'Failed to check pending chunks',
-                details: pendingResult.error
-            });
-        }
-
-        console.log(`📊 Found ${pendingResult.count} chunks needing embeddings`);
-
-        if (pendingResult.count === 0) {
+        if (result.alreadyComplete) {
             return res.json({
                 success: true,
-                message: 'All chunks already have embeddings',
+                message: result.message,
                 pendingCount: 0
-            });
-        }
-
-        // Start processing (this will take time)
-        console.log(`🚀 Starting embedding generation for ${pendingResult.count} chunks...`);
-        const result = await embeddingService.processAllChunks(req.clientId);
-
-        if (!result.success) {
-            console.error('❌ Embedding generation failed:', result.error);
-            return res.status(500).json({
-                success: false,
-                error: 'Failed to generate embeddings',
-                details: result.error
             });
         }
 
         res.json({
             success: true,
-            message: 'Embeddings generated successfully',
+            jobId: result.jobId,
+            status: result.status,
             totalChunks: result.totalChunks,
-            successCount: result.successCount,
-            failedCount: result.failedCount,
-            totalTokens: result.totalTokens,
-            estimatedCost: result.estimatedCost,
-            batches: result.batches
+            message: result.message
         });
 
     } catch (error) {
         console.error('❌ Error in /generate endpoint:', error);
         res.status(500).json({
             success: false,
-            error: 'Failed to generate embeddings',
+            error: 'Failed to start embedding generation',
             details: error.message
+        });
+    }
+});
+
+/**
+ * Get embedding job status and progress
+ * GET /api/embeddings/job/:jobId
+ * 
+ * Auth: 
+ * - Client role: Bearer token (dashboard auth) OR X-API-Key
+ * - Super admin: X-API-Key REQUIRED (to identify which client to work with)
+ */
+router.get('/job/:jobId', async (req, res) => {
+    try {
+        const { jobId } = req.params;
+        const job = await embeddingService.getEmbeddingJobStatus(jobId);
+
+        res.json({
+            success: true,
+            jobId: job.id,
+            status: job.status,
+            progress: {
+                totalChunks: job.total_chunks,
+                processed: job.processed_count,
+                failed: job.failed_count,
+                skipped: job.skipped_count,
+                percentage: job.total_chunks > 0
+                    ? Math.round((job.processed_count / job.total_chunks) * 100)
+                    : 0
+            },
+            cost: {
+                totalTokens: job.total_tokens,
+                estimatedCost: job.estimated_cost,
+                embeddingModel: job.embedding_model
+            },
+            startedAt: job.started_at,
+            completedAt: job.completed_at,
+            error: job.error_message
+        });
+
+    } catch (error) {
+        console.error('Get embedding job error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
         });
     }
 });

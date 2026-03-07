@@ -7,7 +7,7 @@ export const apiKeyMiddleware = async (req, res, next) => {
   try {
     console.log(`🔐 Middleware triggered for: ${req.method} ${req.path}`);
 
-    const apiKey = req.headers['x-api-key'];
+    const apiKey = req.headers['x-api-key']?.trim();
 
     if (!apiKey) {
       console.log('❌ No API key provided');
@@ -20,30 +20,56 @@ export const apiKeyMiddleware = async (req, res, next) => {
     console.log(`🔑 API Key received: ${apiKey}`);
 
     // Query clients table using SHARED client
-    const { data: client, error } = await supabase
-      .from('clients')
-      .select('id, company_name, api_key, website_url')
-      .eq('api_key', apiKey)
-      .single();
+    try {
+      const { data: client, error } = await supabase
+        .from('clients')
+        .select('id, company_name, api_key, website_url, starter_suggestions')
+        .eq('api_key', apiKey)
+        .single();
 
-    console.log('🔍 Query result:', { client, error });
+      if (error) {
+        console.error('❌ Supabase query error:', {
+          message: error.message,
+          code: error.code,
+          hint: error.hint,
+          details: error.details
+        });
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid or inactive API key',
+          debug: error.message
+        });
+      }
 
-    if (error || !client) {
-      console.log('❌ Invalid or inactive API key');
-      return res.status(401).json({
+      if (!client) {
+        console.log('❌ Invalid or inactive API key');
+        console.log(`   Expected key format: "${apiKey}"`);
+        console.log(`   Key length: ${apiKey.length}`);
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid or inactive API key'
+        });
+      }
+
+      console.log(`✅ API Key validated for client: ${client.company_name} (ID: ${client.id})`);
+
+      req.clientId = client.id;
+      req.clientName = client.company_name;
+
+      console.log(`✅ req.clientId set to: ${req.clientId}`);
+
+      next();
+    } catch (queryError) {
+      console.error('❌ API key query error:', {
+        message: queryError.message,
+        stack: queryError.stack
+      });
+      return res.status(500).json({
         success: false,
-        error: 'Invalid or inactive API key'
+        error: 'Authentication service error',
+        debug: queryError.message
       });
     }
-
-    console.log(`✅ API Key validated for client: ${client.company_name} (ID: ${client.id})`);
-
-    req.clientId = client.id;
-    req.clientName = client.company_name;
-
-    console.log(`✅ req.clientId set to: ${req.clientId}`);
-
-    next();
 
   } catch (error) {
     console.error('❌ Middleware error:', error);

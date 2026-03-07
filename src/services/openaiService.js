@@ -383,6 +383,200 @@ class EmbeddingService {
         }
     }
 
+    // ==========================================
+    // Embedding Jobs (async, like scraping_jobs)
+    // ==========================================
+
+    /**
+     * Start an async embedding job — creates a row in embedding_jobs,
+     * kicks off background processing, and returns the jobId immediately.
+     */
+    async startEmbeddingJob(clientId) {
+        // Check pending chunks first
+        const pendingResult = await this.getPendingChunksCount(clientId);
+
+        if (!pendingResult.success) {
+            throw new Error('Failed to check pending chunks: ' + pendingResult.error);
+        }
+
+        if (pendingResult.count === 0) {
+            return {
+                success: true,
+                alreadyComplete: true,
+                message: 'All chunks already have embeddings',
+                pendingCount: 0
+            };
+        }
+
+        // Create job row
+        const { data: job, error: jobError } = await supabase
+            .from('embedding_jobs')
+            .insert({
+                client_id: clientId,
+                status: 'pending',
+                total_chunks: pendingResult.count,
+                embedding_model: this.embeddingModel
+            })
+            .select()
+            .single();
+
+        if (jobError) {
+            console.error('Embedding job creation error:', jobError);
+            throw new Error('Failed to create embedding job');
+        }
+
+        // Fire-and-forget background execution
+        this.executeEmbeddingJob(job.id, clientId).catch(error => {
+            console.error('Embedding job execution error:', error);
+        });
+
+        return {
+            success: true,
+            alreadyComplete: false,
+            jobId: job.id,
+            status: 'pending',
+            totalChunks: pendingResult.count,
+            message: 'Embedding generation started. Use GET /api/embeddings/job/' + job.id + ' to check progress.'
+        };
+    }
+
+    /**
+     * Background worker — processes all pending chunks for a client,
+     * updating the embedding_jobs row with progress after each batch.
+     * Mirrors the pattern of scraperService.executeCrawl().
+     */
+    async executeEmbeddingJob(jobId, clientId) {
+        try {
+            // Mark as running
+            await supabase
+                .from('embedding_jobs')
+                .update({
+                    status: 'running',
+                    started_at: new Date().toISOString()
+                })
+                .eq('id', jobId);
+
+            console.log(`\n🚀 Embedding job ${jobId} running for client ${clientId}...`);
+
+            // Get all chunks without embeddings
+            const { data: chunks, error } = await supabase
+                .from('content_chunks')
+                .select('id, chunk_text, chunk_index, url')
+                .eq('client_id', clientId)
+                .is('embedding', null)
+                .order('url', { ascending: true })
+                .order('chunk_index', { ascending: true });
+
+            if (error) throw error;
+
+            if (!chunks || chunks.length === 0) {
+                await supabase
+                    .from('embedding_jobs')
+                    .update({
+                        status: 'completed',
+                        total_chunks: 0,
+                        completed_at: new Date().toISOString()
+                    })
+                    .eq('id', jobId);
+                return;
+            }
+
+            // Update total_chunks with actual count
+            await supabase
+                .from('embedding_jobs')
+                .update({ total_chunks: chunks.length })
+                .eq('id', jobId);
+
+            // Split into batches
+            const batches = [];
+            for (let i = 0; i < chunks.length; i += this.batchSize) {
+                batches.push(chunks.slice(i, i + this.batchSize));
+            }
+
+            console.log(`📦 Embedding job ${jobId}: ${batches.length} batches of up to ${this.batchSize} chunks`);
+
+            let totalSuccessCount = 0;
+            let totalFailedCount = 0;
+            let totalSkippedCount = 0;
+            let totalTokens = 0;
+
+            for (let i = 0; i < batches.length; i++) {
+                console.log(`\n--- Embedding job ${jobId} — Batch ${i + 1}/${batches.length} ---`);
+
+                const batchResult = await this.processChunksBatch(batches[i]);
+
+                totalSuccessCount += batchResult.successCount;
+                totalFailedCount += batchResult.failedCount;
+                totalTokens += batchResult.totalTokens;
+
+                // Update progress in DB after each batch
+                await supabase
+                    .from('embedding_jobs')
+                    .update({
+                        processed_count: totalSuccessCount,
+                        failed_count: totalFailedCount,
+                        skipped_count: totalSkippedCount,
+                        total_tokens: totalTokens,
+                        estimated_cost: this.estimateCost(totalTokens)
+                    })
+                    .eq('id', jobId);
+
+                // Memory cleanup between batches
+                if (global.gc && i < batches.length - 1) {
+                    global.gc();
+                    await this.delay(1000);
+                }
+            }
+
+            const estimatedCost = this.estimateCost(totalTokens);
+
+            // Mark completed
+            await supabase
+                .from('embedding_jobs')
+                .update({
+                    status: 'completed',
+                    processed_count: totalSuccessCount,
+                    failed_count: totalFailedCount,
+                    skipped_count: totalSkippedCount,
+                    total_tokens: totalTokens,
+                    estimated_cost: estimatedCost,
+                    completed_at: new Date().toISOString()
+                })
+                .eq('id', jobId);
+
+            console.log(`\n✅ Embedding job ${jobId} completed: ${totalSuccessCount}/${chunks.length} successful`);
+            console.log(`🪙 Tokens used: ${totalTokens.toLocaleString()}`);
+            console.log(`💰 Estimated cost: $${estimatedCost.toFixed(4)}`);
+
+        } catch (error) {
+            console.error(`Embedding job ${jobId} error:`, error);
+
+            await supabase
+                .from('embedding_jobs')
+                .update({
+                    status: 'failed',
+                    error_message: error.message,
+                    last_error_at: new Date().toISOString(),
+                    completed_at: new Date().toISOString()
+                })
+                .eq('id', jobId);
+        }
+    }
+
+    /**
+     * Get embedding job status by jobId
+     */
+    async getEmbeddingJobStatus(jobId) {
+        const { data, error } = await supabase
+            .from('embedding_jobs')
+            .select('*')
+            .eq('id', jobId)
+            .single();
+
+        if (error) throw error;
+        return data;
+    }
+
     /**
      * Get chunks without embeddings count
      */
