@@ -219,7 +219,7 @@ export async function updateLeadDetails(supabaseClient, clientId, visitorId, upd
 /**
  * Get leads for a specific client with filtering, searching, and pagination
  * 
- * @param {Object} supabaseClient - Supabase client
+ * @param {Object} supabaseClient - Supabase client (should be admin client for unrestricted access)
  * @param {number} clientId - Client ID
  * @param {Object} filters - Filter options {
  *   q: string (search name/email/company),
@@ -239,52 +239,108 @@ export async function getLeads(supabaseClient, clientId, filters = {}) {
       to,
       limit = 50,
       offset = 0,
-      sort = 'created_at'
+      sort = 'created_at desc'
     } = filters;
 
     // Validate pagination
     const finalLimit = Math.min(Math.max(1, limit), 100); // 1-100
     const finalOffset = Math.max(0, offset);
 
-    console.log(`🔍 Fetching leads for client ${clientId} with filters:`, filters);
+    console.log(`🔍 Fetching leads for client ${clientId}`);
+    console.log(`   Filters: q="${q}", from="${from}", to="${to}", sort="${sort}"`);
+    console.log(`   Pagination: limit=${finalLimit}, offset=${finalOffset}`);
 
-    // Build query
-    let query = supabaseClient
+    // Debug: Check if ANY leads exist for this client
+    const { count: debugCount, error: debugCountError } = await supabaseClient
       .from('leads')
-      .select('*', { count: 'exact' })
+      .select('id', { count: 'exact', head: true })
+      .eq('client_id', clientId);
+    
+    if (debugCountError) {
+      console.warn(`⚠️ DEBUG count error: ${debugCountError.message}`);
+    }
+    console.log(`📊 DEBUG: Total leads for client ${clientId} in database: ${debugCount || 0}`);
+
+    // First, get the total count with filters
+    let countQuery = supabaseClient
+      .from('leads')
+      .select('id', { count: 'exact', head: true })
       .eq('client_id', clientId);
 
-    // Apply search filter (name, email, company)
+    console.log(`   Step 1: Filter by client_id=${clientId}`);
+
+    // Step 2: Apply search filter (name, email, company)
     if (q && q.trim()) {
       const searchTerm = q.trim();
-      query = query.or(`name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,company.ilike.%${searchTerm}%`);
+      console.log(`   Step 2: Apply search filter for "${searchTerm}"`);
+      countQuery = countQuery.or(`name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,company.ilike.%${searchTerm}%`);
+    }
+
+    // Step 3: Apply date range filters
+    if (from) {
+      console.log(`   Step 3a: Filter created_at >= ${from}`);
+      countQuery = countQuery.gte('created_at', from);
+    }
+    if (to) {
+      console.log(`   Step 3b: Filter created_at <= ${to}`);
+      countQuery = countQuery.lte('created_at', to);
+    }
+
+    // Execute count query
+    console.log(`   Executing count query...`);
+    const { count, error: countError } = await countQuery;
+    
+    if (countError) {
+      console.warn(`⚠️ Count query error: ${countError.message}`);
+      console.warn(`   Error details:`, countError);
+    }
+    console.log(`   Total count with filters: ${count || 0}`);
+
+    // Now build query for paginated data
+    let dataQuery = supabaseClient
+      .from('leads')
+      .select('*')
+      .eq('client_id', clientId);
+
+    // Apply search filter
+    if (q && q.trim()) {
+      const searchTerm = q.trim();
+      dataQuery = dataQuery.or(`name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,company.ilike.%${searchTerm}%`);
     }
 
     // Apply date range filters
     if (from) {
-      query = query.gte('created_at', from);
+      dataQuery = dataQuery.gte('created_at', from);
     }
     if (to) {
-      query = query.lte('created_at', to);
+      dataQuery = dataQuery.lte('created_at', to);
     }
 
     // Apply sorting
     const [sortField, sortOrder] = parseSortString(sort);
     if (sortField) {
-      query = query.order(sortField, { ascending: sortOrder === 'asc' });
+      const ascending = sortOrder === 'asc';
+      console.log(`   Step 4: Sort by ${sortField} ${sortOrder}`);
+      dataQuery = dataQuery.order(sortField, { ascending });
     }
 
-    // Apply pagination
-    query = query.range(finalOffset, finalOffset + finalLimit - 1);
+    // Step 5: Apply pagination
+    console.log(`   Step 5: Pagination range(${finalOffset}, ${finalOffset + finalLimit - 1})`);
+    dataQuery = dataQuery.range(finalOffset, finalOffset + finalLimit - 1);
 
-    const { data, error, count } = await query;
+    // Execute query
+    console.log(`   Executing data query...`);
+    const { data, error } = await dataQuery;
 
     if (error) {
-      console.error('❌ Get leads error:', error);
+      console.error('❌ Query execution error:', error);
+      console.error('   Error code:', error.code);
+      console.error('   Error message:', error.message);
+      console.error('   Error details:', error.details);
       throw new Error(`Failed to fetch leads: ${error.message}`);
     }
 
-    console.log(`✅ Retrieved ${data?.length || 0} leads (total: ${count})`);
+    console.log(`✅ Query succeeded: Retrieved ${data?.length || 0} leads (total count: ${count || 0})`);
 
     return {
       items: data || [],
@@ -293,7 +349,7 @@ export async function getLeads(supabaseClient, clientId, filters = {}) {
       offset: finalOffset
     };
   } catch (error) {
-    console.error('❌ getLeads error:', error);
+    console.error('❌ getLeads error:', error.message);
     throw error;
   }
 }
@@ -330,46 +386,84 @@ export async function getLeadsAdmin(supabaseClient, filters = {}) {
 
     console.log(`👨‍💼 Admin fetching leads with filters:`, filters);
 
-    let query = supabaseClient
+    // First, build a base query for count
+    let countQuery = supabaseClient
       .from('leads')
-      .select('*', { count: 'exact' });
+      .select('id', { count: 'exact', head: true });
 
     // Filter by specific client if provided
     if (clientId) {
-      query = query.eq('client_id', clientId);
+      countQuery = countQuery.eq('client_id', clientId);
     }
 
     // Apply search filter
     if (q && q.trim()) {
       const searchTerm = q.trim();
-      query = query.or(`name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,company.ilike.%${searchTerm}%`);
+      countQuery = countQuery.or(`name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,company.ilike.%${searchTerm}%`);
     }
 
     // Apply date range
     if (from) {
-      query = query.gte('created_at', from);
+      countQuery = countQuery.gte('created_at', from);
     }
     if (to) {
-      query = query.lte('created_at', to);
+      countQuery = countQuery.lte('created_at', to);
+    }
+
+    // Execute count query
+    console.log(`   Fetching total count...`);
+    const { count, error: countError } = await countQuery;
+    
+    if (countError) {
+      console.warn(`⚠️ Count query error: ${countError.message}`);
+      console.warn(`   Error details:`, countError);
+    }
+    console.log(`   Total count: ${count || 0}`);
+
+    // Now build query for data with pagination
+    let dataQuery = supabaseClient
+      .from('leads')
+      .select('*');
+
+    // Filter by specific client if provided
+    if (clientId) {
+      dataQuery = dataQuery.eq('client_id', clientId);
+    }
+
+    // Apply search filter
+    if (q && q.trim()) {
+      const searchTerm = q.trim();
+      dataQuery = dataQuery.or(`name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,company.ilike.%${searchTerm}%`);
+    }
+
+    // Apply date range
+    if (from) {
+      dataQuery = dataQuery.gte('created_at', from);
+    }
+    if (to) {
+      dataQuery = dataQuery.lte('created_at', to);
     }
 
     // Apply sorting
     const [sortField, sortOrder] = parseSortString(sort);
     if (sortField) {
-      query = query.order(sortField, { ascending: sortOrder === 'asc' });
+      dataQuery = dataQuery.order(sortField, { ascending: sortOrder === 'asc' });
     }
 
     // Apply pagination
-    query = query.range(finalOffset, finalOffset + finalLimit - 1);
+    console.log(`   Fetching data with pagination: offset=${finalOffset}, limit=${finalLimit}`);
+    dataQuery = dataQuery.range(finalOffset, finalOffset + finalLimit - 1);
 
-    const { data, error, count } = await query;
+    const { data, error } = await dataQuery;
 
     if (error) {
       console.error('❌ Admin get leads error:', error);
+      console.error('   Error code:', error.code);
+      console.error('   Error message:', error.message);
       throw new Error(`Failed to fetch leads: ${error.message}`);
     }
 
-    console.log(`✅ Admin retrieved ${data?.length || 0} leads (total: ${count})`);
+    console.log(`✅ Admin retrieved ${data?.length || 0} leads (total: ${count || 0})`);
 
     return {
       items: data || [],

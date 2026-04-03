@@ -15,6 +15,7 @@ import authRoutes from './routes/authRoutes.js';          // ✅ NEW: /api/me
 import clientRoutes from './routes/clientRoutes.js';      // ✅ NEW: /api/client/* protected
 import leadRoutes from './routes/leadRoutes.js';          // ✅ NEW: Lead capture & retrieval
 import leadAdminRoutes from './routes/leadAdminRoutes.js'; // ✅ NEW: Lead admin endpoints
+import billingRoutes from './routes/billingRoutes.js';    // ✅ NEW: Billing plans endpoints
 
 // Import middleware
 import { apiKeyMiddleware } from './middleware/apiKey.js';
@@ -22,6 +23,7 @@ import { hybridAuthMiddleware } from './middleware/hybridAuth.js';
 import { requireDashboardAuth, requireDashboardRole } from './middleware/dashboardAuth.js';
 import { scraperAuthMiddleware } from './middleware/scraperAuth.js';
 import './config/database.js';
+import { initializeCleanupService, setupGracefulShutdown } from './services/conversationCleanupService.js';
 
 const app = express();
 
@@ -86,6 +88,10 @@ app.use('/api/embeddings', scraperAuthMiddleware, embeddingRoutes);
 
 app.use('/api/search', apiKeyMiddleware, searchRoutes);
 
+// Billing routes: Public endpoint (no authentication required)
+// Returns billing plans with pricing, limits, and entitlements
+app.use('/api/billing', billingRoutes);
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err);
@@ -94,9 +100,15 @@ app.use((err, req, res, next) => {
 
 // Start server
 const PORT = process.env.PORT || 5001;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\n🚀 Server running on port ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
   console.log(`🎨 Widget config: http://localhost:${PORT}/api/widget/config`);
   console.log(`👨‍💼 Admin panel: http://localhost:${PORT}/api/admin/clients\n`);
+
+  // Initialize conversation cleanup service
+  initializeCleanupService();
+
+  // Setup graceful shutdown handlers
+  setupGracefulShutdown();
 });

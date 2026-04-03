@@ -1,5 +1,7 @@
 import express from 'express';
+import supabase from '../config/database.js';
 import { getSubscriptionByClientId, formatSubscriptionResponse } from '../services/subscriptionService.js';
+import { getLeads } from '../services/leadsService.js';
 
 const router = express.Router();
 
@@ -213,6 +215,89 @@ router.get('/conversations', async (req, res) => {
     console.error('❌ /api/client/conversations error:', error);
     res.status(500).json({
       error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * GET /api/client/leads
+ * Protected: Requires client dashboard role
+ * 
+ * Returns all leads for the logged-in client with pagination and filtering
+ * Query Parameters:
+ *   - q: string (search by name/email/company)
+ *   - from: ISO date string (created_at >=)
+ *   - to: ISO date string (created_at <=)
+ *   - limit: number (1-100, default 50)
+ *   - offset: number (default 0)
+ *   - sort: string (e.g., 'created_at desc', 'email asc', default 'created_at desc')
+ * 
+ * Response (Status: 200):
+ * {
+ *   "success": true,
+ *   "items": [
+ *     {
+ *       "id": 1,
+ *       "client_id": 1,
+ *       "visitor_id": "visitor-123",
+ *       "conversation_id": null or number,
+ *       "name": "John Doe",
+ *       "email": "john@example.com",
+ *       "phone": "123-456-7890",
+ *       "company": "Acme Corp",
+ *       "created_at": "2026-01-15T10:30:00Z",
+ *       "updated_at": "2026-01-15T10:30:00Z"
+ *     }
+ *   ],
+ *   "total": 100,
+ *   "limit": 50,
+ *   "offset": 0
+ * }
+ * 
+ * Error Responses:
+ * - 403: Forbidden (client role required)
+ * - 500: Server error
+ */
+router.get('/leads', async (req, res) => {
+  try {
+    // Validate client role
+    if (!req.dashboardUser || req.dashboardUser.role !== 'client') {
+      return res.status(403).json({
+        error: 'Client access required'
+      });
+    }
+
+    const clientId = req.dashboardUser.client_id;
+    const { q, from, to, limit, offset, sort } = req.query;
+
+    console.log(`🔍 /api/client/leads: Fetching leads for client ${clientId}`);
+
+    // Use admin supabase client (unrestricted) - query is still filtered by clientId for data safety
+    const result = await getLeads(supabase, clientId, {
+      q,
+      from,
+      to,
+      limit: limit ? Math.min(100, Math.max(1, parseInt(limit))) : 50,
+      offset: offset ? Math.max(0, parseInt(offset)) : 0,
+      sort: sort || 'created_at desc'
+    });
+
+    console.log(`✅ /api/client/leads: Retrieved ${result.items.length} leads (total: ${result.total})`);
+
+    res.json({
+      success: true,
+      items: result.items,
+      total: result.total,
+      limit: result.limit,
+      offset: result.offset
+    });
+
+  } catch (error) {
+    console.error('❌ /api/client/leads error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch leads',
+      details: error.message
     });
   }
 });

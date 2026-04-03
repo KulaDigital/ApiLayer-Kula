@@ -4,6 +4,7 @@
 
 import express from 'express';
 import { getLeadsAdmin } from '../services/leadsService.js';
+import supabaseAdmin from '../config/database.js';
 
 const router = express.Router();
 
@@ -63,7 +64,7 @@ router.get('/', async (req, res) => {
 
     console.log(`👨‍💼 Admin fetching all leads with filters:`, { clientId, q, from, to });
 
-    const result = await getLeadsAdmin(req.supabaseClient, {
+    const result = await getLeadsAdmin(supabaseAdmin, {
       clientId: clientId ? parseInt(clientId) : undefined,
       q,
       from,

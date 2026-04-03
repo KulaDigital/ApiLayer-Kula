@@ -3,6 +3,7 @@
 // Auth: Hybrid (X-API-Key or Bearer token via hybridAuthMiddleware)
 
 import express from 'express';
+import supabase from '../config/database.js';
 import {
   validateLeadData,
   validateLeadUpdateData,
@@ -167,12 +168,13 @@ router.get('/', async (req, res) => {
 
     console.log(`🔍 Fetching leads for client ${req.clientId}`);
 
-    const result = await getLeads(req.supabaseClient, req.clientId, {
+    // Use admin supabase client (unrestricted) - query is still filtered by clientId
+    const result = await getLeads(supabase, req.clientId, {
       q,
       from,
       to,
-      limit: limit ? parseInt(limit) : 50,
-      offset: offset ? parseInt(offset) : 0,
+      limit: limit ? Math.min(100, Math.max(1, parseInt(limit))) : 50,
+      offset: offset ? Math.max(0, parseInt(offset)) : 0,
       sort: sort || 'created_at desc'
     });
 
