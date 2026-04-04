@@ -179,6 +179,7 @@ router.post('/', async (req, res) => {
     console.log('🔍 Searching knowledge base...');
     let contextSources = [];
     let ragContext = '';
+    let needsHuman = false;
 
     try {
       const embeddingResult = await embeddingService.generateEmbedding(message);
@@ -229,11 +230,16 @@ router.post('/', async (req, res) => {
         }
         else {
           console.log('⚠️ No relevant context found');
+          needsHuman = true;
         }
+      } else {
+        console.log('⚠️ Embedding generation failed');
+        needsHuman = true;
       }
     } catch (ragError) {
       console.error('❌ RAG search failed:', ragError.message);
       console.log('⚠️ Continuing without context...');
+      needsHuman = true;
     }
 
     // 4. Get conversation history
@@ -270,6 +276,7 @@ router.post('/', async (req, res) => {
       response: botResponse,
       conversationId: conversation.id,
       clientName: companyName,
+      needsHuman,
       ...(contextSources.length > 0 && {
         sources: contextSources,
         contextsUsed: contextSources.length

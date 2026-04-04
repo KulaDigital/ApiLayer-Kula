@@ -1598,7 +1598,99 @@ Authorization: Bearer {jwt-token}
 
 ---
 
-## 📁 Project Structure
+## � Supabase Client Usage Guide
+
+The application uses two different Supabase clients for different purposes. Understanding when to use each is critical for proper access control and data isolation.
+
+### Service Role Client (Unrestricted)
+
+**Location:** `src/config/database.js` - Exported as `supabaseAdmin`
+
+**Characteristics:**
+- Initialized with `SUPABASE_SERVICE_KEY` (private key)
+- Bypasses all Row-Level Security (RLS) policies
+- Has unrestricted access to all data in the database
+- Should only be used server-side in trusted contexts
+
+**When to Use:**
+- ✅ Admin operations that need system-wide access
+- ✅ Operations that must access data across multiple clients
+- ✅ Server-to-server communication
+- ✅ Data migrations or batch operations
+- ❌ Never expose this client to the frontend
+- ❌ Never use in client-side code
+
+**Examples:**
+```javascript
+// Admin endpoints that fetch all leads across all clients
+import supabaseAdmin from '../config/database.js';
+
+export async function getLeadsAdmin(supabaseClient, filters) {
+  // Use supabaseAdmin to bypass RLS and get unrestricted data
+  const { count } = await supabaseAdmin
+    .from('leads')
+    .select('id', { count: 'exact', head: true });
+}
+
+// Admin routes
+import supabaseAdmin from '../config/database.js';
+
+router.get('/', async (req, res) => {
+  // Use supabaseAdmin here, NOT req.supabaseClient
+  const result = await getLeadsAdmin(supabaseAdmin, filters);
+});
+```
+
+### Anonymous Key Client (RLS Protected)
+
+**Location:** Created in `src/middleware/dashboardAuth.js` - Attached to `req.supabaseClient`
+
+**Characteristics:**
+- Initialized with `SUPABASE_ANON_KEY` (public key)
+- **Enforces RLS policies** - restricts data access based on user role and permissions
+- Per-request client created with user's JWT token
+- Suitable for dashboard and frontend operations
+
+**When to Use:**
+- ✅ Dashboard user operations with RLS protection
+- ✅ Client-level data access that needs isolation
+- ✅ Any user-facing operations that should respect permissions
+- ❌ Admin operations that need unrestricted access
+- ❌ Operations that must bypass RLS
+
+**Examples:**
+```javascript
+// Dashboard endpoints restricted to user's own data
+router.get('/my-data', async (req, res) => {
+  // Use req.supabaseClient to enforce RLS
+  const { data } = await req.supabaseClient
+    .from('clients')
+    .select('*')
+    // RLS automatically filters to user's client_id
+});
+
+// Chat endpoints for specific clients
+router.post('/chat', async (req, res) => {
+  const { data } = await req.supabaseClient
+    .from('conversations')
+    .select('*')
+    .eq('client_id', req.clientId);
+    // RLS ensures only authorized client data is accessible
+});
+```
+
+### Common Pitfalls
+
+| Pitfall | Problem | Solution |
+|---------|---------|----------|
+| Using `req.supabaseClient` for admin endpoints | Returns `total: 0` or empty data due to RLS restrictions | Use `supabaseAdmin` instead |
+| Passing `req.supabaseClient` to admin service functions | Admin operations get restricted by RLS policies | Import and pass `supabaseAdmin` to admin functions |
+| Exposing `SUPABASE_SERVICE_KEY` in frontend code | Security breach - key can access all data | Keep service key server-side only, never send to client |
+| Mixing clients in the same function | Inconsistent data access and potential security gaps | Use one client type consistently per function |
+
+---
+
+## �📁 Project Structure
 
 ```
 node-chatbot-api/
@@ -1889,6 +1981,47 @@ npx prettier --write src/
 - Check OpenAI account has sufficient credits
 - Review OpenAI rate limits
 - Check temperature and max_tokens parameters
+
+### Issue: Admin endpoints returning `total: 0` (Lead counts)
+**Problem:** The `/api/admin/leads` endpoint was returning `total: 0` even when leads existed in the database.
+
+**Root Cause:** 
+- Admin endpoints were using `req.supabaseClient` (anonymous key with RLS policies) instead of the service role client
+- Row-Level Security (RLS) policies restricted the anonymous key from accessing all leads
+- The anonymous key could only access data based on the authenticated user's permissions, not system-wide data
+
+**Solution:**
+- Always use the **service role client** (`supabaseAdmin` from `src/config/database.js`) for admin operations that need unrestricted access
+- Never use `req.supabaseClient` for admin endpoints
+- Separate count queries from data queries with pagination:
+  - Use `{ count: 'exact', head: true }` to get the total count without pagination
+  - Use a separate query with `.range()` for paginated data
+- This prevents count loss when applying pagination constraints
+
+**Implementation Details:**
+```javascript
+// ✅ CORRECT: Use service role client for admin operations
+import supabaseAdmin from '../config/database.js';
+
+// Separate count and data queries
+const { count } = await supabaseAdmin
+  .from('leads')
+  .select('id', { count: 'exact', head: true })
+  .eq('client_id', clientId);
+
+const { data } = await supabaseAdmin
+  .from('leads')
+  .select('*')
+  .eq('client_id', clientId)
+  .range(offset, offset + limit - 1);
+
+// ❌ WRONG: Don't use anonymous key for admin endpoints
+import result = await getLeadsAdmin(req.supabaseClient, filters);
+```
+
+**References:**
+- `src/routes/leadAdminRoutes.js`: Uses `supabaseAdmin` for admin access
+- `src/services/leadsService.js`: `getLeadsAdmin()` and `getLeads()` functions show proper count handling
 
 ### Issue: High memory usage
 **Solution:**

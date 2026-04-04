@@ -24,6 +24,13 @@ import {
   handleSubscriptionCanceled,
   runExpiryJob
 } from '../services/subscriptionService.js';
+import {
+  getClientMessageCount,
+  getClientMessageStats
+} from '../services/clientStatsService.js';
+import {
+  getLeads
+} from '../services/leadsService.js';
 
 const router = express.Router();
 
@@ -1629,6 +1636,201 @@ router.post('/jobs/expire-subscriptions', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Internal server error',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/admin/clients/:client_id/message-count
+ * Protected: Requires super_admin role OR client role (can only access own client)
+ * 
+ * Returns total message count across all conversations for a specific client
+ * This is useful for tracking message usage against subscription limits
+ * 
+ * Parameters:
+ * - client_id: ID of the client (path parameter)
+ * 
+ * Response (Status: 200):
+ * {
+ *   "client_id": 123,
+ *   "total_messages": 5432,
+ *   "conversation_count": 42,
+ *   "average_messages_per_conversation": 129.33
+ * }
+ * 
+ * Error Responses:
+ * - 403: Forbidden (client trying to access another client's data)
+ * - 404: Client not found
+ * - 500: Server error
+ */
+router.get('/clients/:client_id/message-count', async (req, res) => {
+  try {
+    const { client_id } = req.params;
+    const userRole = req.dashboardUser?.role;
+    const userClientId = req.dashboardUser?.client_id;
+
+    // ✅ Client role users can only access their own client's message count
+    if (userRole === 'client' && parseInt(client_id) !== userClientId) {
+      return res.status(403).json({
+        error: 'You can only access message count for your own client'
+      });
+    }
+
+    // Get message count for this client
+    const stats = await getClientMessageCount(parseInt(client_id));
+
+    console.log(`✅ /api/admin/clients/${client_id}/message-count: Retrieved message stats`);
+
+    res.json(stats);
+
+  } catch (error) {
+    console.error(`❌ /api/admin/clients/:client_id/message-count error:`, error);
+    res.status(500).json({
+      error: 'Failed to retrieve message count'
+    });
+  }
+});
+
+/**
+ * GET /api/admin/clients/:client_id/message-stats
+ * Protected: Requires super_admin role OR client role (can only access own client)
+ * 
+ * Returns detailed message statistics including timeline information
+ * Useful for analytics dashboards and usage reporting
+ * 
+ * Parameters:
+ * - client_id: ID of the client (path parameter)
+ * 
+ * Response (Status: 200):
+ * {
+ *   "client_id": 123,
+ *   "total_messages": 5432,
+ *   "conversation_count": 42,
+ *   "average_messages_per_conversation": 129.33,
+ *   "message_timeline": {
+ *     "first_message_at": "2026-01-15T10:30:00+00:00",
+ *     "last_message_at": "2026-03-23T14:45:22+00:00"
+ *   }
+ * }
+ * 
+ * Error Responses:
+ * - 403: Forbidden (client trying to access another client's data)
+ * - 404: Client not found
+ * - 500: Server error
+ */
+router.get('/clients/:client_id/message-stats', async (req, res) => {
+  try {
+    const { client_id } = req.params;
+    const userRole = req.dashboardUser?.role;
+    const userClientId = req.dashboardUser?.client_id;
+
+    // ✅ Client role users can only access their own client's message stats
+    if (userRole === 'client' && parseInt(client_id) !== userClientId) {
+      return res.status(403).json({
+        error: 'You can only access message stats for your own client'
+      });
+    }
+
+    // Get detailed stats for this client
+    const stats = await getClientMessageStats(parseInt(client_id));
+
+    console.log(`✅ /api/admin/clients/${client_id}/message-stats: Retrieved detailed message stats`);
+
+    res.json(stats);
+
+  } catch (error) {
+    console.error(`❌ /api/admin/clients/:client_id/message-stats error:`, error);
+    res.status(500).json({
+      error: 'Failed to retrieve message stats'
+    });
+  }
+});
+
+/**
+ * GET /api/admin/clients/:client_id/leads
+ * Protected: Requires super_admin role OR client role (can only access own client)
+ * 
+ * Fetches all leads for a specific client with pagination and filtering
+ * Query Parameters:
+ *   - q: string (search by name/email/company)
+ *   - from: ISO date string (created_at >=)
+ *   - to: ISO date string (created_at <=)
+ *   - limit: number (1-100, default 50)
+ *   - offset: number (default 0)
+ *   - sort: string (e.g., 'created_at desc', 'email asc', default 'created_at desc')
+ * 
+ * Response (Status: 200):
+ * {
+ *   "success": true,
+ *   "client_id": 123,
+ *   "items": [
+ *     {
+ *       "id": 1,
+ *       "client_id": 123,
+ *       "visitor_id": "visitor-456",
+ *       "conversation_id": null or number,
+ *       "name": "Jane Smith",
+ *       "email": "jane@example.com",
+ *       "phone": "555-1234",
+ *       "company": "Tech Inc",
+ *       "created_at": "2026-03-20T10:15:00Z",
+ *       "updated_at": "2026-03-20T10:15:00Z"
+ *     }
+ *   ],
+ *   "total": 45,
+ *   "limit": 50,
+ *   "offset": 0
+ * }
+ * 
+ * Error Responses:
+ * - 403: Forbidden (client trying to access another client's leads)
+ * - 500: Server error
+ */
+router.get('/clients/:client_id/leads', async (req, res) => {
+  try {
+    const { client_id } = req.params;
+    const userRole = req.dashboardUser?.role;
+    const userClientId = req.dashboardUser?.client_id;
+
+    // ✅ Client role users can only access their own client's leads
+    if (userRole === 'client' && parseInt(client_id) !== userClientId) {
+      return res.status(403).json({
+        error: 'You can only access leads for your own client'
+      });
+    }
+
+    const { q, from, to, limit, offset, sort } = req.query;
+
+    console.log(`🔍 /api/admin/clients/${client_id}/leads: Fetching leads`);
+    console.log(`   User role: ${userRole}, requesting client_id: ${client_id}`);
+
+    // Use admin supabase client (unrestricted) - still filtered by client_id for data safety
+    const result = await getLeads(supabase, parseInt(client_id), {
+      q,
+      from,
+      to,
+      limit: limit ? Math.min(100, Math.max(1, parseInt(limit))) : 50,
+      offset: offset ? Math.max(0, parseInt(offset)) : 0,
+      sort: sort || 'created_at desc'
+    });
+
+    console.log(`✅ /api/admin/clients/${client_id}/leads: Retrieved ${result.items.length} leads (total: ${result.total})`);
+
+    res.json({
+      success: true,
+      client_id: parseInt(client_id),
+      items: result.items,
+      total: result.total,
+      limit: result.limit,
+      offset: result.offset
+    });
+
+  } catch (error) {
+    console.error(`❌ /api/admin/clients/:client_id/leads error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve leads',
       details: error.message
     });
   }
