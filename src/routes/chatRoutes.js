@@ -3,36 +3,38 @@ import OpenAI from 'openai';
 import supabase from '../config/database.js';
 import { embeddingService } from '../services/openaiService.js';
 import { vectorSearchService } from '../services/vectorSearchService.js';
+import { linkConversationToLead } from '../services/leadsService.js';
 
 const router = express.Router();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // GET /api/chat/history/:conversationId - Fetch conversation history
+// Auth: X-API-Key header (client API key) or Bearer token
+// Middleware automatically extracts client_id from the API key or dashboard user
 router.get('/history/:conversationId', async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const clientId = req.clientId;  // From auth middleware
 
-    console.log(`📜 Fetching history for conversation ${conversationId}`);
+    console.log(`📜 Fetching history for conversation ${conversationId} (client: ${req.clientId})`);
 
     // 1. Verify conversation belongs to this client
-    const { data: conversation, error: convError } = await supabase
+    const { data: conversation, error: convError } = await req.supabaseClient
       .from('conversations')
       .select('id, client_id, visitor_id, status')
       .eq('id', conversationId)
-      .eq('client_id', clientId)  // ✅ Security: Only return conversations for this client
+      .eq('client_id', req.clientId)  // ✅ Security: Only return conversations for this client
       .single();
 
     if (convError || !conversation) {
-      console.log('❌ Conversation not found or unauthorized');
+      console.log(`❌ Conversation ${conversationId} not found for client ${req.clientId}`);
       return res.status(404).json({
         error: 'Conversation not found',
-        messages: []  // ✅ Return empty array so frontend doesn't break
+        messages: []
       });
     }
 
     // 2. Get messages from this conversation
-    const { data: messages, error: msgError } = await supabase
+    const { data: messages, error: msgError } = await req.supabaseClient
       .from('messages')
       .select('id, role, content, created_at')
       .eq('conversation_id', conversationId)
@@ -46,7 +48,7 @@ router.get('/history/:conversationId', async (req, res) => {
       });
     }
 
-    console.log(`✅ Found ${messages?.length || 0} messages`);
+    console.log(`✅ Found ${messages?.length || 0} messages for conversation ${conversationId}`);
 
     // 3. Return in format frontend expects
     res.json({
@@ -65,11 +67,72 @@ router.get('/history/:conversationId', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/chat/client-status
+ * Returns the status fields for the authenticated client and their subscription.
+ *
+ * Authentication: hybridAuthMiddleware (supports X-API-Key for widget and
+ *                 dashboard Bearer tokens).  `req.clientId` is populated.
+ *
+ * Response:
+ * {
+ *   "success": true,
+ *   "client_status": "active" | "inactive" | "pending" | "trial" | ...,
+ *   "subscription_status": "active" | "inactive" | "canceled" | "pending_cancellation" | null
+ * }
+ */
+router.get('/client-status', async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(401).json({ success: false, error: 'Client not authenticated' });
+    }
+
+    // fetch client status
+    const { data: client, error: clientError } = await req.supabaseClient
+      .from('clients')
+      .select('status')
+      .eq('id', clientId)
+      .single();
+
+    if (clientError || !client) {
+      console.error('❌ Failed to fetch client status:', clientError);
+      return res.status(500).json({ success: false, error: 'Unable to retrieve client status' });
+    }
+
+    // fetch subscription status (may not exist)
+    const { data: subscription, error: subError } = await req.supabaseClient
+      .from('client_subscriptions')
+      .select('status')
+      .eq('client_id', clientId)
+      .single();
+
+    if (subError && subError.code !== 'PGRST116') {
+      // PGRST116 = no rows
+      console.error('❌ Failed to fetch subscription status:', subError);
+      return res.status(500).json({ success: false, error: 'Unable to retrieve subscription status' });
+    }
+
+    res.json({
+      success: true,
+      client_status: client.status,
+      subscription_status: subscription ? subscription.status : null
+    });
+
+  } catch (error) {
+    console.error('❌ /api/chat/client-status error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // POST /api/chat/ - Handle incoming chat message
+// Auth: X-API-Key header (client API key)
+// Middleware automatically extracts client_id from the API key
 router.post('/', async (req, res) => {
   try {
     const { message, visitorId } = req.body;
-    const clientId = req.clientId;
+
+    console.log(`\n💬 Message from visitor ${visitorId}`);
 
     // Validate required fields
     if (!message || !visitorId) {
@@ -79,26 +142,44 @@ router.post('/', async (req, res) => {
     }
 
     // ✅ Get client info
-    const { data: client } = await supabase
+    const { data: client } = await req.supabaseClient
       .from('clients')
       .select('company_name, website_url')
-      .eq('id', clientId)
+      .eq('id', req.clientId)
       .single();
 
-    console.log(`\n💬 Message from visitor ${visitorId}`);
-    console.log(`👤 Client: ${client?.company_name || 'Unknown'} (ID: ${clientId})`);
+    console.log(`👤 Client: ${client?.company_name || 'Unknown'} (ID: ${req.clientId})`);
     console.log(`📝 Message: "${message}"`);
 
     // 1. Find or create conversation
-    let conversation = await findOrCreateConversation(clientId, visitorId);
+    let conversation = await findOrCreateConversation(req.supabaseClient, req.clientId, visitorId);
+
+    // 1.5. 🔗 NEW: Link conversation to existing lead if not already linked
+    try {
+      const { data: existingLead, error: leadError } = await req.supabaseClient
+        .from('leads')
+        .select('id, conversation_id')
+        .eq('client_id', req.clientId)
+        .eq('visitor_id', visitorId)
+        .maybeSingle();
+
+      if (existingLead && !existingLead.conversation_id) {
+        console.log(`🔗 Linking conversation ${conversation.id} to existing lead ${existingLead.id}`);
+        await linkConversationToLead(req.supabaseClient, existingLead.id, conversation.id);
+      }
+    } catch (leadLinkError) {
+      console.error('⚠️ Failed to link conversation to lead:', leadLinkError.message);
+      // Don't fail the chat request if lead linking fails - it's non-critical
+    }
 
     // 2. Save user message
-    await saveMessage(conversation.id, 'user', message);
+    await saveMessage(req.supabaseClient, conversation.id, 'user', message);
 
     // 3. RAG: Search for relevant context
     console.log('🔍 Searching knowledge base...');
     let contextSources = [];
     let ragContext = '';
+    let needsHuman = false;
 
     try {
       const embeddingResult = await embeddingService.generateEmbedding(message);
@@ -106,7 +187,7 @@ router.post('/', async (req, res) => {
       if (embeddingResult.success) {
         const searchResult = await vectorSearchService.searchSimilarChunks(
           embeddingResult.embedding,
-          clientId,  // ✅ Pass clientId here
+          req.clientId,  // ✅ Pass clientId here
           {
             matchThreshold: 0.4,
             matchCount: 5
@@ -149,15 +230,20 @@ router.post('/', async (req, res) => {
         }
         else {
           console.log('⚠️ No relevant context found');
+          needsHuman = true;
         }
+      } else {
+        console.log('⚠️ Embedding generation failed');
+        needsHuman = true;
       }
     } catch (ragError) {
       console.error('❌ RAG search failed:', ragError.message);
       console.log('⚠️ Continuing without context...');
+      needsHuman = true;
     }
 
     // 4. Get conversation history
-    const history = await getConversationHistory(conversation.id);
+    const history = await getConversationHistory(req.supabaseClient, conversation.id);
 
     // 5. Build messages with system prompt
     const companyName = client?.company_name || 'our company';
@@ -183,13 +269,14 @@ router.post('/', async (req, res) => {
     console.log('✅ Response generated');
 
     // 7. Save assistant response
-    await saveMessage(conversation.id, 'assistant', botResponse);
+    await saveMessage(req.supabaseClient, conversation.id, 'assistant', botResponse);
 
     // 8. Return response
     res.json({
       response: botResponse,
       conversationId: conversation.id,
       clientName: companyName,
+      needsHuman,
       ...(contextSources.length > 0 && {
         sources: contextSources,
         contextsUsed: contextSources.length
@@ -233,8 +320,8 @@ Instructions:
 }
 
 // Helper functions
-async function findOrCreateConversation(clientId, visitorId) {
-  const { data: existing } = await supabase
+async function findOrCreateConversation(supabaseClient, clientId, visitorId) {
+  const { data: existing } = await supabaseClient
     .from('conversations')
     .select('*')
     .eq('client_id', clientId)
@@ -246,7 +333,7 @@ async function findOrCreateConversation(clientId, visitorId) {
 
   if (existing) return existing;
 
-  const { data: newConversation, error } = await supabase
+  const { data: newConversation, error } = await supabaseClient
     .from('conversations')
     .insert({
       client_id: clientId,
@@ -260,8 +347,8 @@ async function findOrCreateConversation(clientId, visitorId) {
   return newConversation;
 }
 
-async function saveMessage(conversationId, role, content) {
-  const { error } = await supabase
+async function saveMessage(supabaseClient, conversationId, role, content) {
+  const { error } = await supabaseClient
     .from('messages')
     .insert({
       conversation_id: conversationId,
@@ -272,8 +359,8 @@ async function saveMessage(conversationId, role, content) {
   if (error) throw error;
 }
 
-async function getConversationHistory(conversationId) {
-  const { data: messages, error } = await supabase
+async function getConversationHistory(supabaseClient, conversationId) {
+  const { data: messages, error } = await supabaseClient
     .from('messages')
     .select('role, content')
     .eq('conversation_id', conversationId)

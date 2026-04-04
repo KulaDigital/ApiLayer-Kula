@@ -6,7 +6,7 @@
  * @returns {string} Complete embed script HTML
  */
 export function generateEmbedScript(apiKey) {
-  const widgetUrl = process.env.WIDGET_URL || 'http://localhost:3000/widget.js';
+  const widgetUrl = process.env.WIDGET_URL;
   
   return `<script src="${widgetUrl}" data-api-key="${apiKey}"></script>`;
 }
