@@ -27,8 +27,59 @@ import { initializeCleanupService, setupGracefulShutdown } from './services/conv
 
 const app = express();
 
+// CORS Configuration - Build allowed origins from environment variables
+const buildAllowedOrigins = () => {
+  const origins = [];
+
+  // Add production frontends
+  if (process.env.ALLOWED_ORIGINS_PROD_CHAT) {
+    origins.push(process.env.ALLOWED_ORIGINS_PROD_CHAT);
+  }
+  if (process.env.ALLOWED_ORIGINS_PROD_DASHBOARD) {
+    origins.push(process.env.ALLOWED_ORIGINS_PROD_DASHBOARD);
+  }
+
+  // Add development frontends
+  if (process.env.ALLOWED_ORIGINS_DEV_CHAT) {
+    origins.push(process.env.ALLOWED_ORIGINS_DEV_CHAT);
+  }
+  if (process.env.ALLOWED_ORIGINS_DEV_DASHBOARD) {
+    origins.push(process.env.ALLOWED_ORIGINS_DEV_DASHBOARD);
+  }
+
+  // Add local development origins
+  const localPorts = process.env.ALLOWED_ORIGINS_LOCAL_PORTS?.split(',').map(p => p.trim()) || [];
+  localPorts.forEach(port => {
+    origins.push(`http://localhost:${port}`);
+    origins.push(`http://127.0.0.1:${port}`);
+  });
+
+  return origins;
+};
+
+const allowedOrigins = buildAllowedOrigins();
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (e.g., mobile apps, curl requests)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+  maxAge: 86400, // 24 hours
+};
+
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Health check endpoint
