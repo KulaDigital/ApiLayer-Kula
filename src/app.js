@@ -31,23 +31,13 @@ const app = express();
 const buildAllowedOrigins = () => {
   const origins = [];
 
-  // Add production frontends
-  if (process.env.ALLOWED_ORIGINS_PROD_CHAT) {
-    origins.push(process.env.ALLOWED_ORIGINS_PROD_CHAT);
-  }
-  if (process.env.ALLOWED_ORIGINS_PROD_DASHBOARD) {
-    origins.push(process.env.ALLOWED_ORIGINS_PROD_DASHBOARD);
+  // Add main allowed origins (comma-separated list)
+  if (process.env.ALLOWED_ORIGINS) {
+    const mainOrigins = process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(o => o);
+    origins.push(...mainOrigins);
   }
 
-  // Add development frontends
-  if (process.env.ALLOWED_ORIGINS_DEV_CHAT) {
-    origins.push(process.env.ALLOWED_ORIGINS_DEV_CHAT);
-  }
-  if (process.env.ALLOWED_ORIGINS_DEV_DASHBOARD) {
-    origins.push(process.env.ALLOWED_ORIGINS_DEV_DASHBOARD);
-  }
-
-  // Add local development origins
+  // Add local development origins (comma-separated ports)
   const localPorts = process.env.ALLOWED_ORIGINS_LOCAL_PORTS?.split(',').map(p => p.trim()) || [];
   localPorts.forEach(port => {
     origins.push(`http://localhost:${port}`);
