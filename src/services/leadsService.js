@@ -28,6 +28,11 @@ export function validateLeadData(data) {
     errors.push('email must be a valid email address');
   }
 
+  // conversationId is now REQUIRED (changed from optional)
+  if (!data.conversationId || typeof data.conversationId !== 'number') {
+    errors.push('conversationId is required and must be a number');
+  }
+
   // Optional fields validation (if provided)
   if (data.phone && typeof data.phone !== 'string') {
     errors.push('phone must be a string');
@@ -35,10 +40,6 @@ export function validateLeadData(data) {
 
   if (data.company && typeof data.company !== 'string') {
     errors.push('company must be a string');
-  }
-
-  if (data.conversationId && typeof data.conversationId !== 'number') {
-    errors.push('conversationId must be a number');
   }
 
   return {
@@ -106,6 +107,7 @@ export async function upsertLead(supabaseClient, clientId, visitorId, leadData) 
       email: leadData.email?.trim(),
       phone: leadData.phone?.trim() || null,
       company: leadData.company?.trim() || null,
+      updated_at: new Date().toISOString(),
       // Only include conversation_id if explicitly provided
       ...(leadData.conversationId && { conversation_id: leadData.conversationId })
     };

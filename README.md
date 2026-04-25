@@ -17,10 +17,87 @@ A production-ready Node.js + Express backend for the Greeto chat widget. Integra
 - [Development](#development)
 - [Git Workflow & Contributing](#git-workflow--contributing)
 - [Troubleshooting](#troubleshooting)
+- [Recent Changes (April 2026)](#-recent-changes-april-2026)
 
-## 🌿 Git Workflow & Contributing
+## � Recent Changes (April 2026)
 
-### Branch Strategy
+> This section documents the most significant additions and **breaking changes** made to the API. Future developers should read this carefully before integrating against lead and chat endpoints.
+
+### ⚠️ Breaking Change — `conversationId` is now Required in Lead Creation
+
+`POST /api/leads` previously accepted `conversationId` as an optional field. It is now **required**.
+
+- **Before:** `conversationId` was optional; leads could be created without linking to a conversation.
+- **After:** `conversationId` must be provided and must be a valid conversation belonging to the authenticated client. Requests without it return `400`.
+
+---
+
+### ✅ Visitor ID Enhancement System (`src/utils/visitorIdEnhancer.js`)
+
+When a lead is created, the original visitor ID is **enriched with parsed name components** and stored in both the `leads` table and the linked `conversations` row.
+
+**Pattern:** `{org}_{firstName}_{lastName}_{randomDigits}`
+
+**Examples:**
+
+| Original Visitor ID | Lead Name | Enhanced Visitor ID |
+|---------------------|-----------|---------------------|
+| `acme_5829` | `John Doe` | `acme_john_doe_5829` |
+| `kula_digital_7657` | `Radhakrishnan` | `kula_digital_radhakrishnan_7657` |
+| `org_1234` | `Jane Smith Jr.` | `org_jane_smith_jr_1234` |
+
+**Rules:**
+- Names are lowercased and sanitised (spaces/punctuation → underscores)
+- Single-word names produce `{org}_{firstName}_{digits}` (no double underscore)
+- If no name is provided, the original visitor ID is returned unchanged
+- The `visitor_id` stored in both `leads` and `conversations` is the **enhanced** version
+
+---
+
+### ✅ Atomic Lead Creation Transaction (`src/utils/dbTransactions.js`)
+
+Lead creation now performs a **4-step atomic operation** via `createLeadWithEnhancedVisitorId()`:
+
+1. Verify `conversationId` exists and belongs to `clientId`
+2. Check no lead already exists with the enhanced `visitor_id`
+3. Update `conversations.visitor_id` → enhanced ID
+4. Upsert `leads` row with enhanced `visitor_id` + linked `conversation_id`
+
+If any step fails, **no changes are written** to the database. Error codes returned:
+
+| Code | HTTP | Meaning |
+|------|------|---------|
+| `FK_NOT_FOUND` | 403 | Conversation not found or belongs to different client |
+| `UNIQUE_VIOLATION` | 409 | Lead with this enhanced visitor ID already exists |
+| `DB_ERROR` | 500 | Supabase query error |
+| `TRANSACTION_ERROR` | 500 | Unexpected JS exception |
+
+---
+
+### ✅ Conversation Auto-Close Service (`src/services/conversationCleanupService.js`)
+
+A background scheduler runs on server startup and **automatically closes** conversations that have been inactive beyond a configurable threshold.
+
+**Defaults:**
+- Inactivity threshold: **24 hours** (override with `CONVERSATION_INACTIVITY_HOURS` env var)
+- Runs every **15 minutes** (override with `CONVERSATION_CLEANUP_INTERVAL` in milliseconds)
+- Logs only when at least one conversation is closed
+
+**Logic:** Queries all `conversations` with `status = 'active'` and `last_message_at` older than the threshold, then batch-updates them to `status = 'closed'`. Caps at 1,000 conversations per run. Starts automatically on server boot — no API endpoint.
+
+---
+
+### ✅ Client Statistics Service (`src/services/clientStatsService.js`)
+
+New service providing per-client usage analytics used by dashboard and admin routes.
+
+**Exported functions:**
+- `getClientMessageCount(clientId)` → `{ total_messages, conversation_count, average_messages_per_conversation }`
+- `getClientMessageStats(clientId)` → extends the above with `message_timeline: { first_message_at, last_message_at }`
+
+---
+
+## �🌿 Git Workflow & Contributing
 
 This repository follows a structured Git workflow to maintain code quality and stability:
 
@@ -85,6 +162,11 @@ feature/xyz → PR → dev → PR → main (Production)
 - **Web Scraping**: Multi-format support (HTML, XML, JSON) for knowledge base ingestion
 - **Widget Configuration**: Customizable chat widget with branding options
 - **Admin Panel**: Client management, API key generation, and configuration
+- **Enhanced Lead Capture**: Visitor ID enrichment with parsed name components and atomic database synchronization
+- **Visitor ID Enhancement**: Incoming visitor IDs are automatically enriched with parsed `firstName_lastName` components during lead creation (e.g., `acme_5829` → `acme_john_doe_5829`)
+- **Atomic Lead Transactions**: Lead creation atomically updates both the `conversations.visitor_id` and inserts the lead — both succeed or both fail
+- **Conversation Auto-Close**: Background service automatically closes conversations inactive for 24+ hours (runs every 15 minutes)
+- **Client Usage Statistics**: Message count and conversation analytics per client (`clientStatsService`)
 
 ### Security
 - Hybrid authentication supporting both API keys and JWT Bearer tokens
@@ -174,6 +256,8 @@ WIDGET_URL=http://localhost:3000/widget.js
 | `SUPABASE_SERVICE_KEY` | Service role key for server-side authentication | ✅ Yes |
 | `PORT` | Server port (default: 5001) | ❌ No |
 | `WIDGET_URL` | URL to widget.js for embed script generation | ❌ No |
+| `CONVERSATION_INACTIVITY_HOURS` | Hours before an active conversation is auto-closed (default: `24`) | ❌ No |
+| `CONVERSATION_CLEANUP_INTERVAL` | Milliseconds between cleanup runs (default: `900000` = 15 min) | ❌ No |
 
 ## 🏃 Running the Server
 
@@ -897,49 +981,69 @@ Scheduled expiry job to mark expired subscriptions as inactive.
 ### Lead Management Endpoints
 
 #### POST `/api/leads`
-Capture or upsert a lead from the chat widget.
+Capture a lead from the chat widget. **Creates the lead atomically alongside updating the conversation's `visitor_id`** with an enhanced version that embeds the lead's parsed name.
 
 **Authentication:** X-API-Key header OR Bearer token (hybrid auth)
 
 **Request Body:**
 ```json
 {
-  "visitorId": "visitor-123",
+  "visitorId": "acme_5829",
   "name": "John Doe",
   "email": "john@example.com",
   "phone": "+1-234-567-8900",
-  "company": "Acme Corp"
+  "company": "Acme Corp",
+  "conversationId": 26
 }
 ```
 
-**Response:**
+> ⚠️ **Breaking Change:** `conversationId` is now **required** (previously optional). The request will be rejected with `400` if it is missing or not a number.
+
+**Visitor ID Enhancement:**
+The original `visitorId` is automatically enriched with parsed name components before saving. The enhanced ID is stored in both the `leads` and `conversations` tables atomically.
+
+| Input | Name | Enhanced Visitor ID |
+|-------|------|---------------------|
+| `acme_5829` | `John Doe` | `acme_john_doe_5829` |
+| `kula_digital_solution_7657` | `Radhakrishnan` | `kula_digital_solution_radhakrishnan_7657` |
+| `org_1234` | `Jane Smith Jr.` | `org_jane_smith_jr_1234` |
+
+**Response (200 OK):**
 ```json
 {
   "success": true,
-  "leadId": 1,
-  "message": "Lead created/updated successfully",
   "lead": {
-    "id": 1,
+    "id": 12345,
     "client_id": 1,
-    "visitor_id": "visitor-123",
-    "conversation_id": null,
+    "visitor_id": "acme_john_doe_5829",
+    "conversation_id": 26,
     "name": "John Doe",
     "email": "john@example.com",
     "phone": "+1-234-567-8900",
     "company": "Acme Corp",
     "status": "new",
-    "created_at": "2026-01-31T10:00:00Z",
-    "updated_at": "2026-01-31T10:00:00Z"
+    "created_at": "2026-04-20T10:30:45Z",
+    "updated_at": "2026-04-20T10:30:45Z"
   }
 }
 ```
 
 **Status Codes:**
-- `200` - Lead updated successfully
-- `201` - Lead created successfully
-- `400` - Validation error (missing required fields or invalid email)
+- `200` - Lead created successfully
+- `400` - Validation error (missing required fields, invalid email, or missing/invalid `conversationId`)
 - `401` - Invalid authentication
+- `403` - `conversationId` does not belong to this client
+- `409` - Lead already exists for this enhanced visitor ID (duplicate)
 - `500` - Server error
+
+**Atomic Transaction Behaviour:**
+Internally, `POST /api/leads` runs the following steps atomically via `src/utils/dbTransactions.js`:
+1. Verify `conversationId` exists and belongs to `clientId`
+2. Check no lead already exists for the enhanced `visitor_id`
+3. Update `conversations.visitor_id` to the enhanced ID
+4. Upsert the lead with the enhanced `visitor_id` and linked `conversation_id`
+
+If any step fails, no changes are committed to the database.
 
 ---
 
@@ -1721,15 +1825,18 @@ node-chatbot-api/
 │   │   ├── chunkingService.js          # Content chunking
 │   │   ├── dashboardUsersService.js    # Dashboard user management
 │   │   ├── leadsService.js             # ✅ NEW: Lead CRUD & validation
-│   │   └── subscriptionService.js      # ✅ NEW: Subscription management
+│   │   ├── subscriptionService.js      # ✅ NEW: Subscription management
+│   │   ├── clientStatsService.js       # ✅ NEW: Client message & conversation analytics
+│   │   └── conversationCleanupService.js # ✅ NEW: Auto-close inactive conversations
 │   ├── utils/
 │   │   ├── apiKeyGenerator.js          # Unique key generation
 │   │   ├── embedScriptGenerator.js     # Installation scripts
-│   │   └── memoryManager.js            # Memory optimization
+│   │   ├── memoryManager.js            # Memory optimization
+│   │   ├── visitorIdEnhancer.js        # ✅ NEW: Visitor ID enrichment with parsed name components
+│   │   └── dbTransactions.js           # ✅ NEW: Atomic lead creation transaction
 │   └── data/
 │       └── kula_scraped_chunks.json    # Sample knowledge base
-├── migrations/
-│   └── 001_create_leads_table.sql      # ✅ NEW: Lead table schema
+├── migrations/                         # (currently empty - run SQL manually in Supabase)
 ├── .env                                # Environment variables (not in git)
 ├── .gitignore                          # Git exclusions
 ├── package.json                        # Dependencies configuration
@@ -1771,7 +1878,12 @@ node-chatbot-api/
 - **subscriptionService.js** (✅ NEW): Subscription CRUD, formatting, and webhook handling
 - **apiKeyGenerator.js**: Cryptographically secure key generation
 - **embedScriptGenerator.js**: Generates embed code for clients
-- **001_create_leads_table.sql** (✅ NEW): Database schema with constraints and triggers
+- **memoryManager.js**: Heap and garbage collection tuning
+- **visitorIdEnhancer.js** (✅ NEW): Transforms original visitor IDs by embedding parsed `firstName`/`lastName` components. Format: `{org}_{firstName}_{lastName}_{randomDigits}`. Used during lead creation.
+- **dbTransactions.js** (✅ NEW): Provides `createLeadWithEnhancedVisitorId()` — an atomic 4-step operation that verifies the conversation, checks for duplicates, updates `conversations.visitor_id`, and upserts the lead. Any failure rolls back all steps.
+- **clientStatsService.js** (✅ NEW): Provides `getClientMessageCount()` and `getClientMessageStats()` — queries total messages, conversation counts, and message timeline per client.
+- **conversationCleanupService.js** (✅ NEW): Background scheduler that auto-closes `active` conversations whose `last_message_at` exceeds the inactivity threshold (default: 24 hours). Runs every 15 minutes (configurable via `CONVERSATION_INACTIVITY_HOURS` and `CONVERSATION_CLEANUP_INTERVAL` env vars).
+- **001_create_leads_table.sql** (✅ NOTE): Referenced in README but not present in `migrations/`. Run the SQL schema manually in Supabase SQL Editor.
 
 ---
 

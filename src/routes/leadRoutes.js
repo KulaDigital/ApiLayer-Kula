@@ -13,40 +13,48 @@ import {
   updateLeadStatus,
   updateLeadDetails
 } from '../services/leadsService.js';
+import { enhanceVisitorId } from '../utils/visitorIdEnhancer.js';
+import { createLeadWithEnhancedVisitorId } from '../utils/dbTransactions.js';
 
 const router = express.Router();
 
 /**
- * POST /api/leads - Create or update a lead
+ * POST /api/leads - Create or update a lead with enhanced visitor_id
  * Auth: X-API-Key or Bearer token (via hybridAuthMiddleware)
  * 
  * Request body:
  * {
- *   "visitorId": "string" (required),
- *   "name": "string" (required),
+ *   "visitorId": "string" (required) - Format: {org}_{random4digits}
+ *   "name": "string" (required) - Full name (will be parsed and enhanced)
  *   "email": "string" (required),
  *   "phone": "string" (optional),
  *   "company": "string" (optional),
- *   "conversationId": "number" (optional)
+ *   "conversationId": "number" (REQUIRED) - Must be valid conversation for this client
  * }
  * 
- * Response:
+ * Response (200 OK):
  * {
  *   "success": true,
- *   "leadId": 1,
- *   "conversationId": null or number,
- *   "message": "Lead created/updated successfully"
+ *   "lead": {
+ *     "id": 12345,
+ *     "client_id": 1,
+ *     "visitor_id": "kula_digital_solution_john_doe_7657" (enhanced),
+ *     "conversation_id": 26,
+ *     "name": "John Doe",
+ *     "email": "john@example.com",
+ *     "phone": "1234567890",
+ *     "company": "Acme Corp",
+ *     "status": "new",
+ *     "created_at": "2026-04-20T10:30:45Z",
+ *     "updated_at": "2026-04-20T10:30:45Z"
+ *   }
  * }
  * 
- * Behavior:
- * - If lead exists (client_id, visitor_id): Update name/email/phone/company, keep original conversation_id
- * - If lead doesn't exist: Insert with provided data
- * - conversation_id is NEVER overwritten on upsert (preserves original link)
- * 
- * Errors:
- * - 400: Missing required fields or invalid email
+ * Error Cases:
+ * - 400: Missing required fields or validation failed
  * - 401: Missing/invalid authentication
- * - 403: Provided conversation doesn't belong to this client
+ * - 403: Conversation doesn't belong to this client
+ * - 409: Lead already exists for this visitor
  * - 500: Server error
  */
 router.post('/', async (req, res) => {
@@ -74,48 +82,75 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Verify conversation belongs to this client (if provided)
-    if (conversationId) {
-      console.log(`🔐 Verifying conversation ${conversationId} belongs to client ${req.clientId}`);
+    // Generate enhanced visitor_id from name
+    const enhancedVisitorId = enhanceVisitorId(visitorId, name);
+    console.log(`✨ Enhanced visitor_id: ${visitorId} → ${enhancedVisitorId} | client_id: ${req.clientId}`);
 
-      const { data: conversation, error: convError } = await req.supabaseClient
-        .from('conversations')
-        .select('id, client_id')
-        .eq('id', conversationId)
-        .eq('client_id', req.clientId)
-        .single();
+    // Use atomic transaction to create lead with enhanced visitor_id
+    console.log(`\n🔐 Verifying conversation ${conversationId} belongs to client ${req.clientId}`);
+    const result = await createLeadWithEnhancedVisitorId(
+      req.supabaseClient,
+      req.clientId,
+      conversationId,
+      enhancedVisitorId,
+      {
+        name,
+        email,
+        phone,
+        company
+      }
+    );
 
-      if (convError || !conversation) {
-        console.log(`❌ Conversation ${conversationId} not found for client ${req.clientId}`);
+    // Handle transaction result
+    if (!result.success) {
+      console.log(`❌ Lead creation failed: ${result.error} (code: ${result.code})`);
+
+      // Map error codes to HTTP status codes
+      if (result.code === 'FK_NOT_FOUND') {
         return res.status(403).json({
           success: false,
-          error: 'Conversation does not belong to this client'
+          error: result.error
         });
       }
 
-      console.log(`✅ Conversation verified for client ${req.clientId}`);
+      if (result.code === 'UNIQUE_VIOLATION') {
+        console.warn(`⚠️ Duplicate lead attempt: visitor_id=${enhancedVisitorId} already exists | client_id: ${req.clientId}`);
+        return res.status(409).json({
+          success: false,
+          error: result.error
+        });
+      }
+
+      // Default to 500 for other errors
+      return res.status(500).json({
+        success: false,
+        error: result.error
+      });
     }
 
-    // Upsert lead
-    const lead = await upsertLead(req.supabaseClient, req.clientId, visitorId, {
-      name,
-      email,
-      phone,
-      company,
-      conversationId
-    });
-
-    console.log(`✅ Lead captured: ID=${lead.id}, Visitor=${visitorId}`);
+    // Success: Return enhanced lead with updated visitor_id
+    console.log(`✅ Lead created: ID=${result.lead.id}, visitor_id=${result.lead.visitor_id}`);
 
     res.json({
       success: true,
-      leadId: lead.id,
-      conversationId: lead.conversation_id,
-      message: 'Lead created/updated successfully'
+      lead: {
+        id: result.lead.id,
+        client_id: result.lead.client_id,
+        visitor_id: result.lead.visitor_id,
+        conversation_id: result.lead.conversation_id,
+        name: result.lead.name,
+        email: result.lead.email,
+        phone: result.lead.phone,
+        company: result.lead.company,
+        status: result.lead.status,
+        created_at: result.lead.created_at,
+        updated_at: result.lead.updated_at
+      }
     });
 
   } catch (error) {
     console.error('❌ Lead capture error:', error);
+    console.error('   Error details:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to capture lead',
