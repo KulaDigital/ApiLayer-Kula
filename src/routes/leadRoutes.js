@@ -9,6 +9,7 @@ import {
   validateLeadUpdateData,
   upsertLead,
   getLead,
+  getLeadByEmail,
   getLeads,
   updateLeadStatus,
   updateLeadDetails
@@ -54,7 +55,6 @@ const router = express.Router();
  * - 400: Missing required fields or validation failed
  * - 401: Missing/invalid authentication
  * - 403: Conversation doesn't belong to this client
- * - 409: Lead already exists for this visitor
  * - 500: Server error
  */
 router.post('/', async (req, res) => {
@@ -105,7 +105,6 @@ router.post('/', async (req, res) => {
     if (!result.success) {
       console.log(`❌ Lead creation failed: ${result.error} (code: ${result.code})`);
 
-      // Map error codes to HTTP status codes
       if (result.code === 'FK_NOT_FOUND') {
         return res.status(403).json({
           success: false,
@@ -113,26 +112,20 @@ router.post('/', async (req, res) => {
         });
       }
 
-      if (result.code === 'UNIQUE_VIOLATION') {
-        console.warn(`⚠️ Duplicate lead attempt: visitor_id=${enhancedVisitorId} already exists | client_id: ${req.clientId}`);
-        return res.status(409).json({
-          success: false,
-          error: result.error
-        });
-      }
-
-      // Default to 500 for other errors
       return res.status(500).json({
         success: false,
         error: result.error
       });
     }
 
-    // Success: Return enhanced lead with updated visitor_id
-    console.log(`✅ Lead created: ID=${result.lead.id}, visitor_id=${result.lead.visitor_id}`);
+    // Success: Return lead with isNew flag
+    const action = result.isNew ? 'created' : 'updated (duplicate email)';
+    console.log(`✅ Lead ${action}: ID=${result.lead.id}, visitor_id=${result.lead.visitor_id}`);
 
     res.json({
       success: true,
+      leadId: result.lead.id,
+      isNew: result.isNew,
       lead: {
         id: result.lead.id,
         client_id: result.lead.client_id,
@@ -249,7 +242,13 @@ router.get('/:visitorId', async (req, res) => {
 
     console.log(`🔍 Fetching lead for visitor ${visitorId} (client: ${req.clientId})`);
 
-    const lead = await getLead(req.supabaseClient, req.clientId, visitorId);
+    let lead = await getLead(req.supabaseClient, req.clientId, visitorId);
+
+    // Fallback: if visitor_id lookup misses (e.g. session reset), try email
+    if (!lead && req.query.email) {
+      console.log(`⚠️ visitor_id lookup missed, trying email fallback: ${req.query.email}`);
+      lead = await getLeadByEmail(req.supabaseClient, req.clientId, req.query.email);
+    }
 
     if (!lead) {
       console.log(`⚠️ Lead not found for visitor ${visitorId}`);

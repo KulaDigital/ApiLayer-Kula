@@ -162,6 +162,35 @@ export async function getLead(supabaseClient, clientId, visitorId) {
 }
 
 /**
+ * Get a single lead by email (case-insensitive)
+ * Used as fallback when visitor_id lookup returns nothing (e.g. after session reset)
+ * @param {Object} supabaseClient - Supabase client
+ * @param {number} clientId - Client ID
+ * @param {string} email - Email address to search
+ * @returns {Object|null} Lead row or null
+ */
+export async function getLeadByEmail(supabaseClient, clientId, email) {
+  try {
+    const { data, error } = await supabaseClient
+      .from('leads')
+      .select('*')
+      .eq('client_id', clientId)
+      .ilike('email', email.trim())
+      .maybeSingle();
+
+    if (error) {
+      console.error('❌ getLeadByEmail error:', error);
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    console.error('❌ getLeadByEmail error:', error);
+    throw error;
+  }
+}
+
+/**
  * Update lead details (name, email, phone, company)
  * Partial updates allowed - only provided fields are updated
  * @param {Object} supabaseClient - Supabase client

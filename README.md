@@ -32,6 +32,48 @@ A production-ready Node.js + Express backend for the Greeto chat widget. Integra
 
 ---
 
+### ✅ Lead Deduplication by Email on `POST /api/leads`
+
+Leads are now deduplicated by **email address** instead of by session `visitorId`.
+
+**Behavior:**
+- `POST /api/leads` checks for an existing lead matching `(client_id, LOWER(email))` **before** inserting.
+- **If an existing lead is found:**
+  - The existing row is **updated** with the latest `name`, `phone`, `company`, `updated_at`, and current session's `visitorId`
+  - Response returns `isNew: false`
+  - No `409 Conflict` status is returned — deduplication is handled gracefully as an update
+  - This ensures that visitors who reset their session and resubmit the lead form don't create duplicates
+- **If no existing lead is found:**
+  - A new lead is inserted as before
+  - Response returns `isNew: true`
+
+**Response shape updated:**
+```json
+{
+  "success": true,
+  "leadId": 12345,
+  "isNew": true,
+  "lead": { ... }
+}
+```
+
+The `leadId` and `isNew` fields are new; the `lead` object shape remains unchanged.
+
+---
+
+### ✅ Optional Email Fallback for `GET /api/leads/:visitorId`
+
+`GET /api/leads/:visitorId` now supports an optional email-based fallback lookup.
+
+**Behavior:**
+- Primary lookup: by `visitorId` (existing behavior — unchanged)
+- **If not found** and `?email=` query parameter is provided:
+  - Fallback lookup: by `(client_id, LOWER(email))`
+  - Returns the lead if found, or `404` if both lookups miss
+- This is backward compatible — the current widget behaviour (no `?email=` param) remains unchanged
+
+---
+
 ### ✅ Visitor ID Enhancement System (`src/utils/visitorIdEnhancer.js`)
 
 When a lead is created, the original visitor ID is **enriched with parsed name components** and stored in both the `leads` table and the linked `conversations` row.

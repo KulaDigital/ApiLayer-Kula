@@ -55,17 +55,17 @@ export async function createLeadWithEnhancedVisitorId(
     }
     console.log(`✅ Conversation verified: visitor_id=${conversation.visitor_id}`);
 
-    // Step 2: Check if lead already exists with enhanced_id
-    console.log(`\n   [Step 2] Checking if lead already exists with enhanced_id...`);
-    const { data: existingLead, error: checkError } = await supabaseClient
+    // Step 2: Check if lead already exists by email (case-insensitive)
+    console.log(`\n   [Step 2] Checking if lead already exists with email...`);
+    const { data: existingLeadByEmail, error: emailCheckError } = await supabaseClient
       .from('leads')
-      .select('id')
+      .select('*')
       .eq('client_id', clientId)
-      .eq('visitor_id', enhancedVisitorId)
+      .ilike('email', leadData.email?.trim())
       .maybeSingle();
 
-    if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = not found (expected)
-      console.error(`❌ Error checking for existing lead: ${checkError.message}`);
+    if (emailCheckError && emailCheckError.code !== 'PGRST116') {
+      console.error(`❌ Error checking for existing lead by email: ${emailCheckError.message}`);
       return {
         success: false,
         error: 'Failed to check for existing lead',
@@ -73,15 +73,49 @@ export async function createLeadWithEnhancedVisitorId(
       };
     }
 
-    if (existingLead) {
-      console.warn(`⚠️ Lead already exists with enhanced_id: ${enhancedVisitorId}`);
+    if (existingLeadByEmail) {
+      console.log(`⚠️ Existing lead found by email (ID=${existingLeadByEmail.id}), updating instead of inserting`);
+
+      // Update the existing lead with fresh data and the current session's visitor_id
+      const { data: updatedLead, error: updateLeadError } = await supabaseClient
+        .from('leads')
+        .update({
+          name: leadData.name?.trim(),
+          phone: leadData.phone?.trim() || null,
+          company: leadData.company?.trim() || null,
+          visitor_id: enhancedVisitorId,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existingLeadByEmail.id)
+        .select()
+        .single();
+
+      if (updateLeadError) {
+        console.error(`❌ Failed to update existing lead: ${updateLeadError.message}`);
+        return {
+          success: false,
+          error: 'Failed to update existing lead',
+          code: 'DB_ERROR'
+        };
+      }
+
+      // Still update conversation visitor_id so the session is linked correctly
+      await supabaseClient
+        .from('conversations')
+        .update({ visitor_id: enhancedVisitorId })
+        .eq('id', conversationId)
+        .eq('client_id', clientId);
+
+      console.log(`✅ Existing lead updated: ID=${updatedLead.id}, visitor_id=${updatedLead.visitor_id}`);
+
       return {
-        success: false,
-        error: 'Lead already exists for this visitor',
-        code: 'UNIQUE_VIOLATION'
+        success: true,
+        lead: updatedLead,
+        isNew: false
       };
     }
-    console.log(`✅ No existing lead found`);
+
+    console.log(`✅ No existing lead found by email — proceeding with insert`);
 
     // Step 3: Update conversation visitor_id (transaction step 1)
     console.log(`\n   [Step 3] Updating conversation visitor_id to enhanced_id...`);
@@ -160,7 +194,8 @@ export async function createLeadWithEnhancedVisitorId(
 
     return {
       success: true,
-      lead: lead
+      lead: lead,
+      isNew: true
     };
 
   } catch (error) {
