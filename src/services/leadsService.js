@@ -28,6 +28,11 @@ export function validateLeadData(data) {
     errors.push('email must be a valid email address');
   }
 
+  // conversationId is now REQUIRED (changed from optional)
+  if (!data.conversationId || typeof data.conversationId !== 'number') {
+    errors.push('conversationId is required and must be a number');
+  }
+
   // Optional fields validation (if provided)
   if (data.phone && typeof data.phone !== 'string') {
     errors.push('phone must be a string');
@@ -35,10 +40,6 @@ export function validateLeadData(data) {
 
   if (data.company && typeof data.company !== 'string') {
     errors.push('company must be a string');
-  }
-
-  if (data.conversationId && typeof data.conversationId !== 'number') {
-    errors.push('conversationId must be a number');
   }
 
   return {
@@ -106,6 +107,7 @@ export async function upsertLead(supabaseClient, clientId, visitorId, leadData) 
       email: leadData.email?.trim(),
       phone: leadData.phone?.trim() || null,
       company: leadData.company?.trim() || null,
+      updated_at: new Date().toISOString(),
       // Only include conversation_id if explicitly provided
       ...(leadData.conversationId && { conversation_id: leadData.conversationId })
     };
@@ -155,6 +157,35 @@ export async function getLead(supabaseClient, clientId, visitorId) {
     return data;
   } catch (error) {
     console.error('❌ getLead error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get a single lead by email (case-insensitive)
+ * Used as fallback when visitor_id lookup returns nothing (e.g. after session reset)
+ * @param {Object} supabaseClient - Supabase client
+ * @param {number} clientId - Client ID
+ * @param {string} email - Email address to search
+ * @returns {Object|null} Lead row or null
+ */
+export async function getLeadByEmail(supabaseClient, clientId, email) {
+  try {
+    const { data, error } = await supabaseClient
+      .from('leads')
+      .select('*')
+      .eq('client_id', clientId)
+      .ilike('email', email.trim())
+      .maybeSingle();
+
+    if (error) {
+      console.error('❌ getLeadByEmail error:', error);
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    console.error('❌ getLeadByEmail error:', error);
     throw error;
   }
 }
